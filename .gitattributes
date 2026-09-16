@@ -1,0 +1,35 @@
+# 默认策略：提交时自动识别文本并统一存成 LF，检出时按平台转换
+* text=auto
+
+# ---- 文本源码：显式声明，避免被误判为二进制 ----
+*.py    text
+*.tcl   text
+*.md    text
+*.v     text
+*.sv    text
+*.svh   text
+*.vh    text
+*.vhd   text
+*.xdc   text
+*.m     text
+*.bat   text diff=bat
+*.sh    text eol=lf
+
+# ---- 二进制：不做行尾转换、不做 diff ----
+*.exe   binary
+*.dll   binary
+*.lib   binary
+*.so    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.zip   binary
+*.7z    binary
+*.coe   binary
+*.xci   binary
+*.cs16  binary
+*.wv    binary
+*.std   binary
+*.bin   binary

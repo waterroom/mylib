@@ -1,0 +1,53 @@
+# ---- Windows ----
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+build/
+dist/
+
+# ---- MATLAB ----
+*.asv
+*.autosave
+*.mex*
+slprj/
+codegen/
+
+# ---- Vivado / 综合工具 ----
+.Xil/
+*.jou
+*.log
+*.str
+*.pbw
+xsim.dir/
+*.wdb
+*.dcp
+*.bit
+*.ltx
+# 导出包里的 IP 输出产品（.tcl 重建脚本才是要保留的）
+*.gen/
+*.runs/
+*.cache/
+*.hw/
+*.sim/
+*.ip_user_files/
+
+# ---- 编辑器 / 临时文件 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.tmp

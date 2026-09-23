@@ -7,9 +7,10 @@
 //       这是 CDC 场景下唯一"什么信号都能过"的通用载体。
 //
 // 端口:
-//   写域: wr_clk, wr_en, din[DW], full, almost_full, wr_count, overflow, wr_rst_busy
-//   读域: rd_clk, rd_en, dout[DW], empty, almost_empty, valid, underflow,
-//         rd_count, rd_rst_busy
+//   写域: wr_clk, wr_en, din[DW], full, almost_full, prog_full, wr_count,
+//         overflow, wr_rst_busy
+//   读域: rd_clk, rd_en, dout[DW], empty, almost_empty, prog_empty, valid,
+//         underflow, rd_count, rd_rst_busy
 //   rst 为公共复位 (高有效), 具体语义见下。
 //
 // 各信号语义 (与 xpm_sync_fifo 一致, 这里只列差异):
@@ -17,6 +18,10 @@
 //                        有 CDC_STAGES 拍的延迟: wr_count 偏大、rd_count 偏小,
 //                        只适合看趋势/调试, 流控请用 full/almost_full/empty/
 //                        almost_empty。
+//   prog_full / prog_empty  可编程水线 (PROG_*_THRESH, 0 = 不启用恒 0),
+//                        语义见 xpm_sync_fifo 头部。异步模式水线比较用的对侧
+//                        指针带同步延迟, 标志的置起/撤销比同步模式多
+//                        CDC_STAGES 拍级别的迟滞, 提前量要按这个余量估。
 //   valid                "读数据有效": std 模式为 rd_en 后 READ_LATENCY 拍;
 //                        fwft 模式 dout 上有数据即有效。
 //
@@ -42,15 +47,21 @@
 //   READ_LATENCY  仅 std 模式生效 (默认 1); fwft 内部固定 2 拍
 //   MEM_TYPE      FIFO_MEMORY_TYPE: "auto"/"block"/"distributed";
 //                 "uram" 只能用于同步 FIFO (XPM 会报 DRC 错误)
+//   PROG_FULL_THRESH  可编程满水线阈值, 0 = 不启用 (默认)。异步模式的合法
+//                 区间下限比同步多抬 CDC_STAGES (等宽 + std + DEPTH=16 +
+//                 CDC=2 时为 [5, 13]), 非法值由 XPM DRC $error 并打印合法区间。
+//   PROG_EMPTY_THRESH 可编程空水线阈值, 0 = 不启用 (默认); fwft 下实际水线
+//                 = 参数值 - 2 (同 xpm_sync_fifo 的 THRESH_ADJ 说明)。
 //   CDC_STAGES    CDC_SYNC_STAGES, 2..8, 默认 2。深 16 的 FIFO 最大只能取 4;
 //                 RELATED_CLOCKS=1 时必须保持默认 2
 //   RELATED_CLOCKS 1 = 两时钟同源/频率关系确定 (工具可放宽时序), 默认 0
 //   CNT_W         count 位宽, 由 DEPTH 自动推导, 请勿覆盖
 //
 // 已固化的 XPM 配置:
-//   USE_ADV_FEATURES = "1D0D" (位定义见 xpm_fifo.sv 第 208~218 行, 说明见
-//   xpm_sync_fifo.sv 头部)。XPM 默认值 "0707" 不含 almost_full/almost_empty/
-//   data_valid, 直接照抄会得到恒 0 的输出。
+//   USE_ADV_FEATURES 由 prog 阈值参数推导: 全 0 (默认) 为 "1D0D", 开
+//   prog_full / prog_empty 后为 "1D0F" / "1F0D" / "1F0F" (位定义、XPM 默认
+//   "0707" 少开 almost_*/data_valid 的坑、以及"位开而阈值为 0 时 prog_empty
+//   恒 1"的暗坑, 说明见 xpm_sync_fifo.sv 头部)。
 //
 // 命名提示:
 //   官方宏名是 xpm_fifo_async, 本 wrapper 叫 xpm_async_fifo 以免与 XPM 原语
@@ -77,6 +88,8 @@ module xpm_async_fifo #(
   parameter string       READ_MODE      = "std",
   parameter int unsigned READ_LATENCY   = 1,
   parameter string       MEM_TYPE       = "auto",
+  parameter int unsigned PROG_FULL_THRESH  = 0,
+  parameter int unsigned PROG_EMPTY_THRESH = 0,
   parameter int unsigned CDC_STAGES     = 2,
   parameter bit          RELATED_CLOCKS = 1'b0,
   parameter int unsigned CNT_W          = $clog2(DEPTH) + 1
@@ -87,6 +100,7 @@ module xpm_async_fifo #(
   input  logic [DW-1:0]    din,
   output logic             full,
   output logic             almost_full,
+  output logic             prog_full,
   output logic [CNT_W-1:0] wr_count,
   output logic             overflow,
   output logic             wr_rst_busy,
@@ -97,6 +111,7 @@ module xpm_async_fifo #(
   output logic [DW-1:0]    dout,
   output logic             empty,
   output logic             almost_empty,
+  output logic             prog_empty,
   output logic             valid,
   output logic             underflow,
   output logic [CNT_W-1:0] rd_count,
@@ -121,6 +136,16 @@ module xpm_async_fifo #(
     .dest_arst (rst_sync)
   );
 
+  // prog 水线特性位推导 (规则与暗坑说明见 xpm_sync_fifo.sv):
+  // 阈值 0 = 位也不开, 保持默认 "1D0D" 契约; 禁用时阈值透传 0 安全
+  // (DRC 与水线比较都在 EN_PF/EN_PE 的 generate 里)。
+  localparam bit EN_PF = (PROG_FULL_THRESH  != 0);
+  localparam bit EN_PE = (PROG_EMPTY_THRESH != 0);
+  // 同 xpm_sync_fifo: 不写 localparam string, 否则 Vivado 综合器会在
+  // xpm_fifo.sv 的 hstr2bin() 处报 bit[127:0] vs string 类型不匹配。
+  localparam ADV_FEATURES = EN_PF ? (EN_PE ? "1F0F" : "1D0F")
+                                  : (EN_PE ? "1F0D" : "1D0D");
+
   xpm_fifo_async #(
     .FIFO_MEMORY_TYPE    (MEM_TYPE),
     .ECC_MODE            ("no_ecc"),
@@ -129,11 +154,13 @@ module xpm_async_fifo #(
     .WRITE_DATA_WIDTH    (DW),
     .WR_DATA_COUNT_WIDTH (CNT_W),
     .FULL_RESET_VALUE    (0),
-    .USE_ADV_FEATURES    ("1D0D"),
+    .USE_ADV_FEATURES    (ADV_FEATURES),
     .READ_MODE           (READ_MODE),
     .FIFO_READ_LATENCY   (READ_LATENCY),
     .READ_DATA_WIDTH     (DW),
     .RD_DATA_COUNT_WIDTH (CNT_W),
+    .PROG_FULL_THRESH    (PROG_FULL_THRESH),
+    .PROG_EMPTY_THRESH   (PROG_EMPTY_THRESH),
     .DOUT_RESET_VALUE    ("0"),
     .CDC_SYNC_STAGES     (CDC_STAGES),
     .WAKEUP_TIME         (0)
@@ -145,18 +172,18 @@ module xpm_async_fifo #(
     .wr_en         (wr_en),
     .din           (din),
     .full          (full),
-    .prog_full     (),                 // 未启用 (USE_ADV_FEATURES[1]=0)
+    .prog_full     (prog_full),          // 特性位未开时 XPM 输出恒 0
     .wr_data_count (wr_count),
     .overflow      (overflow),
     .wr_rst_busy   (wr_rst_busy),
     .almost_full   (almost_full),
-    .wr_ack        (),                 // 未启用 (USE_ADV_FEATURES[4]=0)
+    .wr_ack        (),                   // 未启用 (USE_ADV_FEATURES[4]=0)
 
     .rd_clk        (rd_clk),
     .rd_en         (rd_en),
     .dout          (dout),
     .empty         (empty),
-    .prog_empty    (),                 // 未启用 (USE_ADV_FEATURES[9]=0)
+    .prog_empty    (prog_empty),         // 特性位未开时 XPM 输出恒 0
     .rd_data_count (rd_count),
     .underflow     (underflow),
     .rd_rst_busy   (rd_rst_busy),

@@ -5,6 +5,8 @@
 //   - CDC: 单 bit / 多 bit 电平同步、脉冲同步、复位桥
 //   - 同步 FIFO: BRAM ("block") + std、分布式 RAM ("distributed") + fwft
 //   - 异步 FIFO: BRAM + 双时钟
+//   - prog 可编程水线: 两个 FIFO 各开 PROG_FULL/EMPTY_THRESH (含 fwft 的
+//     THRESH_ADJ 路径), 验证参数与端口贯通
 // 端口全部引到顶层, 综合时不会被裁掉。
 //=============================================================================
 
@@ -52,6 +54,8 @@ module synth_top #(
   output logic        f_almost_empty,
   output logic        f_valid,
   output logic        f_underflow,
+  output logic        f_prog_full,
+  output logic        f_prog_empty,
 
   // 异步 FIFO (BRAM, 双时钟)
   input  logic        a_wr_en,
@@ -69,6 +73,8 @@ module synth_top #(
   output logic        a_underflow,
   output logic [$clog2(DEPTH):0] a_rd_count,
   output logic        a_rd_rst_busy,
+  output logic        a_prog_full,
+  output logic        a_prog_empty,
 
   // CDC / 复位桥
   output logic        bit_out,
@@ -103,25 +109,32 @@ module synth_top #(
     .rd_en(s_rd_en), .dout(s_dout), .empty(s_empty),
     .almost_empty(s_almost_empty), .valid(s_valid), .underflow(s_underflow));
 
-  // ---- 同步 FIFO: 分布式 RAM, fwft 模式 ----
+  // ---- 同步 FIFO: 分布式 RAM, fwft 模式, 开 prog 水线 ----
+  // (fwft 实际水线 = 阈值-2, 见 xpm_sync_fifo.sv 头部 THRESH_ADJ 说明)
   xpm_sync_fifo #(
-    .DW(16), .DEPTH(64), .READ_MODE("fwft"), .MEM_TYPE("distributed")
+    .DW(16), .DEPTH(64), .READ_MODE("fwft"), .MEM_TYPE("distributed"),
+    .PROG_FULL_THRESH(48), .PROG_EMPTY_THRESH(8)
   ) u_sfifo_lutram (
     .clk(clk_a), .rst(rst_a),
     .wr_en(f_wr_en), .din(f_din), .full(f_full), .almost_full(f_almost_full),
+    .prog_full(f_prog_full),
     .count(f_count), .overflow(f_overflow), .rst_busy(f_rst_busy),
     .rd_en(f_rd_en), .dout(f_dout), .empty(f_empty),
-    .almost_empty(f_almost_empty), .valid(f_valid), .underflow(f_underflow));
+    .almost_empty(f_almost_empty), .prog_empty(f_prog_empty),
+    .valid(f_valid), .underflow(f_underflow));
 
-  // ---- 异步 FIFO: BRAM, 双时钟 ----
+  // ---- 异步 FIFO: BRAM, 双时钟, 开 prog 水线 ----
   xpm_async_fifo #(
-    .DW(32), .DEPTH(512), .READ_MODE("std"), .MEM_TYPE("block")
+    .DW(32), .DEPTH(512), .READ_MODE("std"), .MEM_TYPE("block"),
+    .PROG_FULL_THRESH(500), .PROG_EMPTY_THRESH(8)
   ) u_afifo (
     .wr_clk(clk_a), .wr_en(a_wr_en), .din(a_din),
-    .full(a_full), .almost_full(a_almost_full), .wr_count(a_wr_count),
+    .full(a_full), .almost_full(a_almost_full), .prog_full(a_prog_full),
+    .wr_count(a_wr_count),
     .overflow(a_overflow), .wr_rst_busy(a_wr_rst_busy),
     .rd_clk(clk_b), .rd_en(a_rd_en), .dout(a_dout),
-    .empty(a_empty), .almost_empty(a_almost_empty), .valid(a_valid),
+    .empty(a_empty), .almost_empty(a_almost_empty), .prog_empty(a_prog_empty),
+    .valid(a_valid),
     .underflow(a_underflow), .rd_count(a_rd_count),
     .rd_rst_busy(a_rd_rst_busy), .rst(rst_a));
 

@@ -20,7 +20,7 @@ Vivado 版本只需要改这一层。这一层只覆盖日常最高频的几件�
 | `xpm_pulse_sync.sv` | `xpm_pulse_sync` | `xpm_cdc_pulse` | 单周期脉冲 / 事件跨时钟 |
 | `xpm_sync_fifo.sv` | `xpm_sync_fifo` | `xpm_fifo_sync` | 同步 FIFO |
 | `xpm_async_fifo.sv` | `xpm_async_fifo` | `xpm_fifo_async` | 异步 FIFO（跨时钟域数据通路） |
-| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（121 项检查） |
+| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（142 项检查） |
 | `sim/run_xsim.sh` | — | — | 一键跑 xsim 自检 |
 | `synth/synth_top.sv` `synth/synth_check.tcl` | — | — | 真实器件综合检查（默认 xczu48dr） |
 
@@ -60,6 +60,11 @@ xpm_cdc_sync #(.W(16), .STAGES(2)) u_status_sync (
 xpm_pulse_sync #(.STAGES(2)) u_evt (
     .src_clk(clk100), .src_rst(rst100), .src_pulse(evt),
     .dest_clk(clk250), .dest_rst(rst250), .dest_pulse(evt_250m));
+
+// 提前背压: 占用量 >= 500 就让上游停发 (almost_full 钉死在 DEPTH-1 挪不动)
+xpm_sync_fifo #(.DW(32), .DEPTH(512), .PROG_FULL_THRESH(500)) u_fifo (
+    .clk(clk100), .rst(rst100),
+    .wr_en(wr_en), .din(din), .prog_full(stop_accept), ...);
 ```
 
 ## 参数速查
@@ -69,8 +74,8 @@ xpm_pulse_sync #(.STAGES(2)) u_evt (
 | `xpm_cdc_sync` | `W`(1) `STAGES`(2) `REG_SRC`(1) `SIM_ASSERT_CHK`(0) | `W`: 1..1024；`STAGES`(=`DEST_SYNC_FF`): 2..10；`REG_SRC=1` 表示源域先打一拍（源信号是组合逻辑时必须为 1） |
 | `xpm_rst_sync` | `STAGES`(2) | 2..10 |
 | `xpm_pulse_sync` | `STAGES`(2) `REG_OUT`(0) `SIM_ASSERT_CHK`(0) | `STAGES`: 2..10；`REG_OUT=1` 让 `dest_pulse` 在目标域再打一拍（扇出大时改善时序） |
-| `xpm_sync_fifo` | `DW`(8) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `CNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；`MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+） |
-| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；**"uram" 不能用于异步 FIFO**（XPM 报错） |
+| `xpm_sync_fifo` | `DW`(8) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `PROG_FULL_THRESH`(0) `PROG_EMPTY_THRESH`(0) `CNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；`MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+）；prog 阈值 0 = 不启用（恒 0），合法区间随配置变化（非法值 XPM DRC 报错并打印合法区间），fwft 实际水线 = 阈值−2 |
+| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（XPM 报错） |
 
 `CNT_W` 是 `count` 的位宽，由 `DEPTH` 自动推导（`clog2(DEPTH)+1`），不要覆盖。
 
@@ -81,16 +86,22 @@ xpm_pulse_sync #(.STAGES(2)) u_evt (
 | 方向 | 写侧 | 读侧 |
 | --- | --- | --- |
 | in | `clk` `rst` `wr_en` `din[DW-1:0]` | `rd_en` |
-| out | `full` `almost_full` `count[CNT_W-1:0]` `overflow` `rst_busy` | `dout[DW-1:0]` `empty` `almost_empty` `valid` `underflow` |
+| out | `full` `almost_full` `prog_full` `count[CNT_W-1:0]` `overflow` `rst_busy` | `dout[DW-1:0]` `empty` `almost_empty` `prog_empty` `valid` `underflow` |
 
-异步 FIFO（`xpm_async_fifo`）：写侧 `wr_clk/wr_en/din/full/almost_full/wr_count/overflow/wr_rst_busy`，
-读侧 `rd_clk/rd_en/dout/empty/almost_empty/valid/underflow/rd_count/rd_rst_busy`，
+异步 FIFO（`xpm_async_fifo`）：写侧 `wr_clk/wr_en/din/full/almost_full/prog_full/wr_count/overflow/wr_rst_busy`，
+读侧 `rd_clk/rd_en/dout/empty/almost_empty/prog_empty/valid/underflow/rd_count/rd_rst_busy`，
 外加公共 `rst`。
 
 * `valid`：std 模式为 `rd_en` 后 `READ_LATENCY` 拍的"数据有效"（实测与 `dout`
   同拍），fwft 模式为"`dout` 上有数据"。把 `dout` 打拍使用时用它判断。
 * `overflow` / `underflow`：满写 / 空读的指示（1 拍脉冲）。XPM 内部会屏蔽这些
   误操作（写不进 / 读不出），这两个信号是给调试看的，方便抓协议 bug。
+* `prog_full` / `prog_empty`：可编程水线（`PROG_FULL_THRESH` / `PROG_EMPTY_THRESH`，
+  **0 = 不启用，输出恒 0**）。std 等宽时边界即参数值（占用量 ≥ 阈值 / 剩余 ≤ 阈值），
+  但标志比 `almost_*` **多 1 拍**寄存延迟（XPM 用寄存后的差值指针比较，实测第 8 个
+  字写入后的下一拍才置起）；fwft 实际水线 = 阈值 − 2；异步模式的置起/撤销还带
+  对侧指针 CDC 同步的迟滞。与 `almost_*` 互补不是替代：prog 的合法区间够不到
+  两端端点，almost 的水线挪不出端点。
 * `rst_busy`（同步 FIFO）与 `*_rst_busy`（异步 FIFO）：复位进行中标志。复位
   释放后等它撤销再开始操作即可，复位期间即使驱动 `wr_en/rd_en` 也不会写坏。
 
@@ -209,11 +220,28 @@ testbench 就是这么写的）。两种做法选一个即可。
    `empty=1`）。窗口宽度实测：同步 FIFO 复位撤销后还要 `rst_busy` 7 个 clk、
    异步 FIFO 要 `wr_rst_busy` 34 个 wr_clk —— 所以上游必须等到对应的
    `rst_busy` 撤销，做法见"复位释放与能不能马上写"。
+10. **prog 水线（`PROG_FULL_THRESH` / `PROG_EMPTY_THRESH`，本层 0 = 不启用）**：
+   std 等宽时边界即参数值（`prog_full`：占用量 ≥ 阈值；`prog_empty`：剩余 ≤
+   阈值），但标志用**寄存后的差值指针**比较，比 `almost_*` / `full` / `empty`
+   **多 1 拍**（实测：第 8 个字写入后的下一拍才置起）。fwft 模式 XPM 内部把
+   阈值减 2 再比（`PF/PE_THRESH_ADJ`）；异步模式水线比较用对侧同步指针，
+   置起/撤销带 `CDC_STAGES` 拍级迟滞。**特性位开了但阈值为 0 时 `prog_empty`
+   输出恒 1**（不是 0，`xpm_fifo.sv` 525~526 行）——本层"阈值 0 = 位也不开"
+   的推导从结构上避开这个坑。合法区间（等宽、`DEPTH=16` 示例）：std 同步
+   [3, 13]；fwft 同步 [5, 11]；std 异步 CDC=2 [5, 13]——下限随 `CDC_STAGES`
+   抬高、fwft 两端各收 2、上限 ≈ `DEPTH-3`，非法值由 XPM DRC `$error` 并
+   打印当时的合法区间。
+11. **给 XPM 传条件推导的 `USE_ADV_FEATURES` 时，localparam 不能声明成
+   `string`**：XPM 的参数端口和内部 `hstr2bin()` 都按打包位向量处理，显式
+   `string` 类型会让 Vivado **综合器**在 `xpm_fifo.sv` 的 `hstr2bin()` 处报
+   `bit [127:0] vs string` 类型不匹配（xsim/Questa 仿真器不受影响，属于
+   只综合器踩的坑）。本层用无类型 `localparam` + 字符串字面量三元表达式，
+   字面量按打包位向量流动正好匹配——实测 xczu48dr 综合通过。
 
 ## 验证
 
 ```bash
-# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 121 项检查
+# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 142 项检查
 bash sim/run_xsim.sh            # 默认 Vivado 2022.1
 bash sim/run_xsim.sh 2018.3     # 换版本
 
@@ -231,8 +259,8 @@ vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
 （参数合法值仍以安装目录里的 XPM 源码为准：
 `<Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv`、`.../xpm_cdc/hdl/xpm_cdc.sv`）：
 
-* FIFO 的 ECC（`ECC_MODE`）、`prog_full` / `prog_empty` 自定义阈值、`sleep`
-  低功耗、`wr_ack`、AXI-Stream 接口的 `xpm_fifo_axis`；
+* FIFO 的 ECC（`ECC_MODE`）、`sleep` 低功耗、`wr_ack`、AXI-Stream 接口的
+  `xpm_fifo_axis`；
 * 握手类 CDC（`xpm_cdc_handshake`）、格雷码（`xpm_cdc_gray`）、
   低延迟握手（`xpm_cdc_low_latency_handshake`）；
 * 存储器（`xpm_memory_sdpram` / `tdpram` / `spram`）——本层还没包，按同样

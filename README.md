@@ -58,4 +58,20 @@ python std_to_wv.py input.std -o output.wv
 
 ## v_sv/
 
-Verilog / SystemVerilog 源码目录，待填充。
+### `v_sv/xpm_wrappers/`
+
+**Xilinx XPM 常用宏的薄封装**（SystemVerilog）。XPM 是 Vivado 自带的官方基础
+库，CDC / FIFO / 复位同步这类基础设施应当直接用它；但 XPM 的接口名跨代稳定、
+**参数契约不稳定**（合法参数值、可用特性、默认行为随器件代际和 Vivado 版本
+漂移），`USE_ADV_FEATURES` 这类位定义又属于"抄错一个字符就让输出恒零"的暗
+知识。这一层把日常最高频的部分固化下来：统一命名、统一"异步置位 / 同步释放"
+的复位风格、固化参数与特性位，以后换器件 / 换 Vivado 版本只改这一层。
+
+五个模块：`xpm_cdc_sync`（单 bit / 总线电平同步）、`xpm_rst_sync`（复位桥）、
+`xpm_pulse_sync`（脉冲 / 事件跨时钟）、`xpm_sync_fifo`、`xpm_async_fifo`。
+附自检 testbench（142 项检查，`sim/run_xsim.sh` 一键跑）和真实器件综合检查
+（`synth/synth_check.tcl`，默认 xczu48dr）。
+
+用法、参数/端口速查、以及实测得到的几条关键结论（XPM 默认 `"0707"` 不含
+`almost_*` / `data_valid`；异步 FIFO 有效深度 = `DEPTH`-1；`count` 不能当精确
+流控阈值等）见 [`README.md`](v_sv/xpm_wrappers/README.md)。

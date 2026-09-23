@@ -16,6 +16,10 @@
 //   wr_en, din     写使能 / 写数据 (full 时写被忽略, 不报错)
 //   full           满 (写不进)
 //   almost_full    "接近满"标志, 比 full 早 1 个写入量置起 (实测见 README)
+//   prog_full      可编程满水线: 占用量 >= PROG_FULL_THRESH 时置起。
+//                  默认 (阈值 0) = 不启用, 恒 0。almost_full 的水线钉死在
+//                  DEPTH-1 挪不动, prog_full 放中间做提前背压; 但它的合法
+//                  阈值区间也够不到 DEPTH-1, 两者互补不是替代。
 //   count          当前占用量 (写域视角, 宽度 CNT_W)。注意有 ±1 拍的寄存器
 //                  时序差, 不要拿它当精确流控阈值 -- 流控用 full/almost_full。
 //   overflow       写满还写时的溢出指示 (1 拍脉冲, 便于排查协议 bug)
@@ -25,6 +29,8 @@
 //   dout           读数据
 //   empty          空 (读不出)
 //   almost_empty   "接近空"标志
+//   prog_empty     可编程空水线: 剩余量 <= PROG_EMPTY_THRESH 时置起。
+//                  默认 (阈值 0) = 不启用, 恒 0。
 //   valid          读数据有效 (std 模式: rd_en 后 READ_LATENCY 拍; fwft 模式:
 //                  dout 有数据即有效)。把 dout 打拍使用时用 valid 判断。
 //   underflow      读空还读时的下溢指示 (1 拍脉冲)
@@ -41,6 +47,13 @@
 //                "fwft" 时 XPM 内部固定按 2 拍处理, 本参数被忽略
 //   MEM_TYPE     FIFO_MEMORY_TYPE: "auto" (默认, 由工具选) / "block"(BRAM) /
 //                "distributed"(LUTRAM) / "uram"(UltraRAM, 仅 UltraScale+)
+//   PROG_FULL_THRESH  可编程满水线阈值, 0 = 不启用 (默认)。合法区间随配置
+//                变化 (等宽 + std + DEPTH=16 时为 [3, DEPTH-3]), 非法值由
+//                XPM DRC $error 并打印当时的合法区间 -- 用户显式设阈值时,
+//                这个报错是有用信息而不是暗坑。
+//   PROG_EMPTY_THRESH 可编程空水线阈值, 0 = 不启用 (默认)。fwft 模式下 XPM
+//                内部把两个阈值都再减 2 才比较 (PF/PE_THRESH_ADJ), 实际水线
+//                = 参数值 - 2; std 模式无修正。
 //   CNT_W        count 位宽, 由 DEPTH 自动推导 (clog2(DEPTH)+1), 请勿覆盖
 //
 // 复位与初值:
@@ -52,15 +65,20 @@
 //   上电初值: DOUT_RESET_VALUE="0", 标志位复位值 FULL_RESET_VALUE=0。
 //
 // 已固化的 XPM 配置 (改动前请先读 XPM 源码):
-//   USE_ADV_FEATURES = "1D0D", 即只开本 wrapper 引出的高级标志:
+//   USE_ADV_FEATURES 由 prog 阈值参数推导。全 0 (默认) 时为 "1D0D",
+//   即只开本 wrapper 引出的高级标志:
 //     [0]=overflow  [2]=wr_data_count  [3]=almost_full        写侧
 //     [8]=underflow [10]=rd_data_count [11]=almost_empty
 //     [12]=data_valid                                         读侧
 //   (位定义见 <Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv 第 208~218 行;
 //    默认值 "0707" 并不包含 almost_full / almost_empty / data_valid,
 //    网上照抄的 "0707" 会让这些输出恒为 0。)
-//   prog_full / prog_empty 未开 (会引入阈值合法范围检查), 需要时打开
-//   bit1/bit9 并同时设置 PROG_FULL_THRESH / PROG_EMPTY_THRESH 合法值。
+//   PROG_FULL_THRESH / PROG_EMPTY_THRESH 任一非 0 时再打开对应特性位:
+//   [1]=prog_full, [9]=prog_empty, 即 PF 开 -> "1D0F", PE 开 -> "1F0D",
+//   双开 -> "1F0F"。
+//   注意 XPM 的一个暗坑 (xpm_fifo.sv 525~526 行): 特性位开了但阈值为 0 时,
+//   prog_empty 输出恒 1 (不是 0!)。本 wrapper 用 "阈值 0 = 位也不开" 的推导
+//   规则, 从结构上避开它。
 //
 // 例化示例:
 //   xpm_sync_fifo #(.DW(32), .DEPTH(512), .READ_MODE("fwft")) u_fifo (
@@ -82,6 +100,8 @@ module xpm_sync_fifo #(
   parameter string       READ_MODE     = "std",
   parameter int unsigned READ_LATENCY  = 1,
   parameter string       MEM_TYPE      = "auto",
+  parameter int unsigned PROG_FULL_THRESH  = 0,
+  parameter int unsigned PROG_EMPTY_THRESH = 0,
   parameter int unsigned CNT_W         = $clog2(DEPTH) + 1
 ) (
   input  logic             clk,
@@ -91,6 +111,7 @@ module xpm_sync_fifo #(
   input  logic [DW-1:0]    din,
   output logic             full,
   output logic             almost_full,
+  output logic             prog_full,
   output logic [CNT_W-1:0] count,
   output logic             overflow,
   output logic             rst_busy,
@@ -99,6 +120,7 @@ module xpm_sync_fifo #(
   output logic [DW-1:0]    dout,
   output logic             empty,
   output logic             almost_empty,
+  output logic             prog_empty,
   output logic             valid,
   output logic             underflow
 );
@@ -118,6 +140,18 @@ module xpm_sync_fifo #(
     .dest_arst (rst_sync)
   );
 
+  // prog 水线特性位推导: 阈值 0 = 位也不开 (保持默认 "1D0D" 契约)。
+  // 禁用时阈值按 0 透传是安全的: DRC 与水线比较逻辑都在 EN_PF/EN_PE 的
+  // generate 里, 不会触碰。
+  localparam bit EN_PF = (PROG_FULL_THRESH  != 0);
+  localparam bit EN_PE = (PROG_EMPTY_THRESH != 0);
+  // 注意不写成 localparam string: XPM 的参数端口与 hstr2bin() 都按打包位
+  // 向量处理, 字面量本身就是这么流动的; 显式 string 类型反而会让 Vivado
+  // 综合器在 xpm_fifo.sv 的 hstr2bin() 处报 bit[127:0] vs string 类型
+  // 不匹配 (仿真器不受影响, 只综合器踩)。
+  localparam ADV_FEATURES = EN_PF ? (EN_PE ? "1F0F" : "1D0F")
+                                  : (EN_PE ? "1F0D" : "1D0D");
+
   xpm_fifo_sync #(
     .FIFO_MEMORY_TYPE    (MEM_TYPE),
     .ECC_MODE            ("no_ecc"),
@@ -125,11 +159,13 @@ module xpm_sync_fifo #(
     .WRITE_DATA_WIDTH    (DW),
     .WR_DATA_COUNT_WIDTH (CNT_W),
     .FULL_RESET_VALUE    (0),
-    .USE_ADV_FEATURES    ("1D0D"),
+    .USE_ADV_FEATURES    (ADV_FEATURES),
     .READ_MODE           (READ_MODE),
     .FIFO_READ_LATENCY   (READ_LATENCY),
     .READ_DATA_WIDTH     (DW),
     .RD_DATA_COUNT_WIDTH (CNT_W),
+    .PROG_FULL_THRESH    (PROG_FULL_THRESH),
+    .PROG_EMPTY_THRESH   (PROG_EMPTY_THRESH),
     .DOUT_RESET_VALUE    ("0"),
     .WAKEUP_TIME         (0)
   ) u_xpm_fifo_sync (
@@ -140,17 +176,17 @@ module xpm_sync_fifo #(
     .wr_en         (wr_en),
     .din           (din),
     .full          (full),
-    .prog_full     (),                 // 未启用 (USE_ADV_FEATURES[1]=0)
+    .prog_full     (prog_full),          // 特性位未开时 XPM 输出恒 0
     .wr_data_count (count),
     .overflow      (overflow),
     .wr_rst_busy   (rst_busy),
     .almost_full   (almost_full),
-    .wr_ack        (),                 // 未启用 (USE_ADV_FEATURES[4]=0)
+    .wr_ack        (),                   // 未启用 (USE_ADV_FEATURES[4]=0)
 
     .rd_en         (rd_en),
     .dout          (dout),
     .empty         (empty),
-    .prog_empty    (),                 // 未启用 (USE_ADV_FEATURES[9]=0)
+    .prog_empty    (prog_empty),         // 特性位未开时 XPM 输出恒 0
     .rd_data_count (),
     .underflow     (underflow),
     .rd_rst_busy   (),                 // 同步 FIFO 内部 == wr_rst_busy

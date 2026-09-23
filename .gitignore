@@ -29,11 +29,15 @@ codegen/
 *.log
 *.str
 *.pbw
+*.pb
 xsim.dir/
 *.wdb
 *.dcp
 *.bit
 *.ltx
+# 验证脚本产物 (可重新生成)
+xsim_work/
+synth_work/
 # 导出包里的 IP 输出产品（.tcl 重建脚本才是要保留的）
 *.gen/
 *.runs/

@@ -9,6 +9,8 @@
 //   xpm_async_fifo 100M <-> 57M 跨时钟读写; 1ns 复位脉冲能被捕获;
 //                  实测有效深度 (DEPTH=16/32 两档, XPM 异步 FIFO 比标称少 1)
 //   rst_busy 语义  上电 (无外部复位) / 时钟停住 / 复位窗口内写入 的行为
+//   prog 水线      PROG_FULL/EMPTY_THRESH 置起边界 (同步+异步) 与
+//                  阈值 0 时输出恒 0 的默认契约
 //
 // 运行: bash sim/run_xsim.sh   (需要 Vivado 的 xvlog/xelab/xsim)
 //
@@ -105,15 +107,17 @@ module tb_xpm_wrappers;
 
   logic        ovf_seen_f1 = 1'b0, unf_seen_f1 = 1'b0;
   logic        ovf_busy_seen_f1 = 1'b0;
+  logic        pfull_f1, pempty_f1;          // 阈值 0 (默认): 特性位不开, 应恒 0
 
   xpm_sync_fifo #(.DW(8), .DEPTH(16), .READ_MODE("std")) u_sfifo_std (
     .clk(clk100), .rst(rst_f1),
     .wr_en(wr_en_f1), .din(din_f1),
-    .full(full_f1), .almost_full(afull_f1), .count(cnt_f1),
+    .full(full_f1), .almost_full(afull_f1), .prog_full(pfull_f1),
+    .count(cnt_f1),
     .overflow(ovf_f1), .rst_busy(wrbusy_f1),
     .rd_en(rd_en_f1), .dout(dout_f1),
-    .empty(empty_f1), .almost_empty(aempty_f1), .valid(valid_f1),
-    .underflow(unf_f1));
+    .empty(empty_f1), .almost_empty(aempty_f1), .prog_empty(pempty_f1),
+    .valid(valid_f1), .underflow(unf_f1));
 
   always @(posedge clk100) begin
     if (ovf_f1) ovf_seen_f1 <= 1'b1;
@@ -181,6 +185,51 @@ module tb_xpm_wrappers;
     .empty(empty_f4), .almost_empty(aempty_f4), .valid(valid_f4),
     .underflow(unf_f4), .rd_count(rcnt_f4), .rd_rst_busy(rdbusy_f4),
     .rst(rst_f4));
+
+  //=============================================================
+  // 9) prog_full / prog_empty 可编程水线 (同步 + 异步)
+  //    std 模式等宽 -> PF/PE_THRESH_ADJ 无修正, 边界即参数值:
+  //    PF=8: 占用量 >= 8 置起; PE=4: 剩余量 <= 4 置起
+  //    (阈值在合法区间中段取: 同步 std DEPTH=16 为 [3,13], 异步再加 CDC)
+  //    注意: prog 标志用寄存后的差值指针比较, 比 almost_*/full/empty 多
+  //    1 拍延迟 (实测: 第 8 个字写入后的下一拍才置起), 采样边界晚一拍。
+  //=============================================================
+  logic        rst_f7   = 1'b1;
+  logic        wr_en_f7 = 1'b0, rd_en_f7 = 1'b0;
+  logic [7:0]  din_f7   = 8'h00;
+  logic        full_f7, afull_f7, pfull_f7, ovf_f7, wrbusy_f7;
+  logic [4:0]  cnt_f7;
+  logic [7:0]  dout_f7;
+  logic        empty_f7, aempty_f7, pempty_f7, valid_f7, unf_f7;
+
+  xpm_sync_fifo #(.DW(8), .DEPTH(16), .READ_MODE("std"),
+                  .PROG_FULL_THRESH(8), .PROG_EMPTY_THRESH(4)) u_sfifo_prog (
+    .clk(clk100), .rst(rst_f7),
+    .wr_en(wr_en_f7), .din(din_f7),
+    .full(full_f7), .almost_full(afull_f7), .prog_full(pfull_f7),
+    .count(cnt_f7),
+    .overflow(ovf_f7), .rst_busy(wrbusy_f7),
+    .rd_en(rd_en_f7), .dout(dout_f7),
+    .empty(empty_f7), .almost_empty(aempty_f7), .prog_empty(pempty_f7),
+    .valid(valid_f7), .underflow(unf_f7));
+
+  logic        rst_f8    = 1'b1;
+  logic        wr_en_f8  = 1'b0, rd_en_f8 = 1'b0;
+  logic [7:0]  din_f8    = 8'h00;
+  logic        full_f8, afull_f8, pfull_f8, ovf_f8, wrbusy_f8, rdbusy_f8;
+  logic [4:0]  wcnt_f8, rcnt_f8;
+  logic [7:0]  dout_f8;
+  logic        empty_f8, aempty_f8, pempty_f8, valid_f8, unf_f8;
+
+  xpm_async_fifo #(.DW(8), .DEPTH(16), .READ_MODE("std"),
+                   .PROG_FULL_THRESH(8), .PROG_EMPTY_THRESH(4)) u_afifo_prog (
+    .wr_clk(clk100), .wr_en(wr_en_f8), .din(din_f8),
+    .full(full_f8), .almost_full(afull_f8), .prog_full(pfull_f8),
+    .wr_count(wcnt_f8), .overflow(ovf_f8), .wr_rst_busy(wrbusy_f8),
+    .rd_clk(clk57), .rd_en(rd_en_f8), .dout(dout_f8),
+    .empty(empty_f8), .almost_empty(aempty_f8), .prog_empty(pempty_f8),
+    .valid(valid_f8), .underflow(unf_f8),
+    .rd_count(rcnt_f8), .rd_rst_busy(rdbusy_f8), .rst(rst_f8));
 
   //=============================================================
   // 8) rst_busy 语义: 上电 (无外部复位) / 时钟停住 时的行为
@@ -363,6 +412,8 @@ module tb_xpm_wrappers;
     repeat (2) @(posedge clk100); #1.0;
     chk("full=1 after 16 writes (nominal depth usable)", full_f1 === 1'b1);
     chk_eq("count=16 after 16 writes", cnt_f1, 16);
+    chk("prog tie-off: prog_full=0 while full (thresh 0 = bits off)",
+        pfull_f1 === 1'b0);
 
     // 满时再写: overflow 应指示, 数据不进 FIFO
     @(negedge clk100); wr_en_f1 = 1'b1; din_f1 = 8'hEE;
@@ -389,6 +440,8 @@ module tb_xpm_wrappers;
     @(negedge clk100); rd_en_f1 = 1'b0;
     repeat (2) @(posedge clk100); #1.0;
     chk_eq("count=0 after drain", cnt_f1, 0);
+    chk("prog tie-off: prog_empty=0 while empty (thresh 0 = bits off)",
+        pempty_f1 === 1'b0);
 
     // 空读: underflow 应指示
     @(negedge clk100); rd_en_f1 = 1'b1;
@@ -619,6 +672,93 @@ module tb_xpm_wrappers;
       chk_eq($sformatf("no-ext-reset instance read[%0d]", i), dout_f5, 8'hE0 + i[7:0]);
     end
     @(negedge clk_g); rd_en_f5 = 1'b0;
+
+    //-----------------------------------------------------------
+    $display("[9] prog_full / prog_empty watermarks (PF=8, PE=4)");
+    //-----------------------------------------------------------
+    //---- 同步 FIFO: 边界即参数值 (std 等宽无 THRESH_ADJ) ----
+    wr_en_f7 = 1'b0; rd_en_f7 = 1'b0; rst_f7 = 1'b1;
+    repeat (5) @(posedge clk100);
+    rst_f7 = 1'b0;
+    wait (!wrbusy_f7);
+    repeat (2) @(posedge clk100); #1.0;
+    chk("prog: empty fifo -> prog_empty=1 (occ 0 <= 4)", pempty_f7 === 1'b1);
+    chk("prog: empty fifo -> prog_full=0",              pfull_f7  === 1'b0);
+
+    for (int i = 0; i < 16; i++) begin
+      @(negedge clk100);
+      wr_en_f7 = 1'b1; din_f7 = 8'h20 + i[7:0];
+      // i 轮下降沿时已接受 i 个字 (与 [4] 的采样约定一致);
+      // prog 标志滞后 1 拍, 本拍看到的是 i-1
+      if (i == 7) chk("prog_full=0 when 7 words in", pfull_f7 === 1'b0);
+      if (i == 8) chk("prog_full still 0 at 8 in (flag lags 1 clk)",
+                      pfull_f7 === 1'b0);
+      if (i == 9) chk("prog_full=1 at 9 in (saw 8>=8 one clk late)",
+                      pfull_f7 === 1'b1);
+    end
+    @(negedge clk100); wr_en_f7 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk("prog_full stays 1 when full (16 in)",
+        pfull_f7 === 1'b1 && full_f7 === 1'b1);
+
+    for (int i = 0; i < 16; i++) begin
+      @(negedge clk100);
+      rd_en_f7 = 1'b1;
+      @(posedge clk100); #1.0;
+      // 已读出 i+1 个, 剩 15-i 个; prog 标志滞后 1 拍, 看到的是 16-i
+      if (i == 7)  chk("prog_full=1 when 8 words left (lag sees 9)",
+                       pfull_f7 === 1'b1);
+      if (i == 8)  chk("prog_full=1 when 7 words left (lag sees 8)",
+                       pfull_f7 === 1'b1);
+      if (i == 9)  chk("prog_full=0 when 6 words left (lag sees 7)",
+                       pfull_f7 === 1'b0);
+      if (i == 11) chk("prog_empty=0 when 4 words left (lag sees 5)",
+                       pempty_f7 === 1'b0);
+      if (i == 12) chk("prog_empty=1 when 3 words left (lag sees 4)",
+                       pempty_f7 === 1'b1);
+    end
+    @(negedge clk100); rd_en_f7 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk("prog_empty stays 1 when empty",
+        pempty_f7 === 1'b1 && empty_f7 === 1'b1);
+
+    //---- 异步 FIFO: 水线比较用同步后的对侧指针, 边界同参数值 ----
+    wr_en_f8 = 1'b0; rd_en_f8 = 1'b0; rst_f8 = 1'b1;
+    repeat (6) @(posedge clk100);
+    rst_f8 = 1'b0;
+    wait (!wrbusy_f8);
+    wait (!rdbusy_f8);
+    repeat (4) @(posedge clk57); #1.0;
+    chk("async prog: empty -> prog_empty=1", pempty_f8 === 1'b1);
+
+    for (int i = 0; i < 40; i++) begin
+      @(negedge clk100);
+      if (full_f8 === 1'b1) break;
+      wr_en_f8 = 1'b1; din_f8 = 8'h40 + i[7:0];
+      if (i == 8) chk("async prog_full still 0 at 8 in (lags 1 wr_clk)",
+                      pfull_f8 === 1'b0);
+      if (i == 9) chk("async prog_full=1 at 9 in", pfull_f8 === 1'b1);
+    end
+    @(negedge clk100); wr_en_f8 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk("async prog_full=1 when full (15 in)", pfull_f8 === 1'b1);
+
+    repeat (12) @(posedge clk57); #1.0;   // 等指针 CDC 收敛再读
+    for (int i = 0; i < 40; i++) begin
+      @(negedge clk57);
+      if (empty_f8 === 1'b1) break;
+      rd_en_f8 = 1'b1;
+      @(posedge clk57); #1.0;
+      // 已读 i+1 个, 剩 14-i 个; prog 滞后 1 拍看到 15-i
+      if (i == 10) chk("async prog_empty still 0 at 4 left (lags 1 rd_clk)",
+                       pempty_f8 === 1'b0);
+      if (i == 11) chk("async prog_empty=1 at 3 left (lag sees 4)",
+                       pempty_f8 === 1'b1);
+    end
+    @(negedge clk57); rd_en_f8 = 1'b0;
+    repeat (4) @(posedge clk57); #1.0;
+    chk("async prog_empty stays 1 when empty",
+        pempty_f8 === 1'b1 && empty_f8 === 1'b1);
 
     //-----------------------------------------------------------
     $display("=== RESULT: %0d checks, %0d failures ===", checks, errors);

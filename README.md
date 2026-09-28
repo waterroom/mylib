@@ -67,9 +67,15 @@ python std_to_wv.py input.std -o output.wv
 知识。这一层把日常最高频的部分固化下来：统一命名、统一"异步置位 / 同步释放"
 的复位风格、固化参数与特性位，以后换器件 / 换 Vivado 版本只改这一层。
 
-五个模块：`xpm_cdc_sync`（单 bit / 总线电平同步）、`xpm_rst_sync`（复位桥）、
-`xpm_pulse_sync`（脉冲 / 事件跨时钟）、`xpm_sync_fifo`、`xpm_async_fifo`。
-附自检 testbench（214 项检查，`sim/run_xsim.sh` 一键跑）和真实器件综合检查
+> **库版本 1.0**（2026-09）：8 模块 + 约束模板；自检 290 项，
+> Vivado 2018.3 / 2022.1 / 2024.2 三版本回归。
+
+八个模块：`xpm_cdc_sync`（单 bit / 总线电平同步）、`xpm_rst_sync`（复位桥）、
+`xpm_sync_rst`（同步复位同步器，上电即复位可选）、`xpm_pulse_sync`（脉冲 /
+事件跨时钟）、`xpm_handshake`（多 bit 数据握手跨时钟）、`xpm_sdpram`（简单
+双口 RAM，缓冲 / 延迟线）、`xpm_sync_fifo`、`xpm_async_fifo`。附异步时钟组
+约束模板（`constrs/xpm_wrappers.xdc`）。
+附自检 testbench（290 项检查，`sim/run_xsim_all.sh` 三版本一键跑）和真实器件综合检查
 （`synth/synth_check.tcl`，默认 xczu48dr）。
 
 用法、参数/端口速查、以及实测得到的几条关键结论（XPM 默认 `"0707"` 不含

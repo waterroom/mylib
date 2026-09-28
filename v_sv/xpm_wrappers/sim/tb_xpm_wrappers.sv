@@ -13,6 +13,12 @@
 //                  阈值 0 时输出恒 0 的默认契约
 //   非对称位宽     sync 4:1 / async 1:2 数据完整性 (小端拼包实测)、
 //                  count 单位、DEPTH-1 规则按写侧字计
+//   sdpram         等宽/变宽 (小端拼包) 读写、doutb_vld 与读延迟对齐、
+//                  distributed 组合读 (LATENCY_B=0)
+//   sync_rst       上电即复位 (INIT=1) / 上电不复位 (INIT=0)、
+//                  同步置位与同步释放的节拍
+//   断言镜像       SIM_ASSERT_CHK=1 实例共享黄金激励, 配合 run_xsim.sh
+//                  的 Error 门验证 XPM 协议断言不误触发
 //
 // 运行: bash sim/run_xsim.sh   (需要 Vivado 的 xvlog/xelab/xsim)
 //
@@ -110,6 +116,7 @@ module tb_xpm_wrappers;
   logic        ovf_seen_f1 = 1'b0, unf_seen_f1 = 1'b0;
   logic        ovf_busy_seen_f1 = 1'b0;
   logic        pfull_f1, pempty_f1;          // 阈值 0 (默认): 特性位不开, 应恒 0
+  logic [4:0]  rcnt_f1;
 
   xpm_sync_fifo #(.DW(8), .DEPTH(16), .READ_MODE("std")) u_sfifo_std (
     .clk(clk100), .rst(rst_f1),
@@ -119,7 +126,7 @@ module tb_xpm_wrappers;
     .overflow(ovf_f1), .rst_busy(wrbusy_f1),
     .rd_en(rd_en_f1), .dout(dout_f1),
     .empty(empty_f1), .almost_empty(aempty_f1), .prog_empty(pempty_f1),
-    .valid(valid_f1), .underflow(unf_f1));
+    .valid(valid_f1), .underflow(unf_f1), .rd_count(rcnt_f1));
 
   always @(posedge clk100) begin
     if (ovf_f1) ovf_seen_f1 <= 1'b1;
@@ -264,6 +271,136 @@ module tb_xpm_wrappers;
     .rd_clk(clk57), .rd_en(rd_en_f10), .dout(dout_f10),
     .empty(empty_f10), .valid(valid_f10), .rd_count(rcnt_f10),
     .rd_rst_busy(rdbusy_f10), .rst(rst_f10));
+
+  //=============================================================
+  // 11) xpm_sdpram: 等宽 block / 变宽 block / distributed 组合读
+  //=============================================================
+  // A) 等宽 8bit, 64 深, 读延迟 1 拍 (典型延迟线配置)
+  logic [5:0]  sdp_a_addr, sdp_b_addr;
+  logic [7:0]  sdp_din, sdp_dout;
+  logic        sdp_we, sdp_enb, sdp_vld;
+
+  xpm_sdpram #(.DW_A(8), .DEPTH(64), .LATENCY_B(1), .MEM_TYPE("block")) u_sdp_eq (
+    .clka(clk100), .addra(sdp_a_addr), .dina(sdp_din), .wea(sdp_we),
+    .clkb(clk100), .enb(sdp_enb), .addrb(sdp_b_addr),
+    .doutb(sdp_dout), .doutb_vld(sdp_vld));
+
+  // B) 变宽 8->16 (1:2), 16 写深 -> 8 读深 (小端拼包实测)
+  logic [3:0]  sdp2_a_addr;
+  logic [2:0]  sdp2_b_addr;
+  logic [7:0]  sdp2_din;
+  logic [15:0] sdp2_dout;
+  logic        sdp2_we, sdp2_enb, sdp2_vld;
+  logic [15:0] sdp2_exp;
+
+  xpm_sdpram #(.DW_A(8), .DW_B(16), .DEPTH(16), .LATENCY_B(1), .MEM_TYPE("block")) u_sdp_asym (
+    .clka(clk100), .addra(sdp2_a_addr), .dina(sdp2_din), .wea(sdp2_we),
+    .clkb(clk100), .enb(sdp2_enb), .addrb(sdp2_b_addr),
+    .doutb(sdp2_dout), .doutb_vld(sdp2_vld));
+
+  // C) distributed 组合读 (LATENCY_B=0)
+  logic [3:0]  sdp3_a_addr, sdp3_b_addr;
+  logic [7:0]  sdp3_din, sdp3_dout;
+  logic        sdp3_we, sdp3_enb, sdp3_vld;
+
+  xpm_sdpram #(.DW_A(8), .DEPTH(16), .LATENCY_B(0), .MEM_TYPE("distributed"),
+               .RD_MODE_B("read_first")) u_sdp_comb (
+    .clka(clk100), .addra(sdp3_a_addr), .dina(sdp3_din), .wea(sdp3_we),
+    .clkb(clk100), .enb(sdp3_enb), .addrb(sdp3_b_addr),
+    .doutb(sdp3_dout), .doutb_vld(sdp3_vld));
+
+  // D) 独立时钟 block: 写域 100M / 读域 57M, vld 在读域移位
+  logic [3:0]  sdp4_a_addr, sdp4_b_addr;
+  logic [15:0] sdp4_din, sdp4_dout;
+  logic        sdp4_we, sdp4_enb, sdp4_vld;
+
+  xpm_sdpram #(.DW_A(16), .DEPTH(16), .LATENCY_B(1), .MEM_TYPE("block"),
+               .CLOCKING_MODE("independent_clock")) u_sdp_indclk (
+    .clka(clk100), .addra(sdp4_a_addr), .dina(sdp4_din), .wea(sdp4_we),
+    .clkb(clk57), .enb(sdp4_enb), .addrb(sdp4_b_addr),
+    .doutb(sdp4_dout), .doutb_vld(sdp4_vld));
+
+  //=============================================================
+  // 12) xpm_sync_rst: INIT=1 (上电即复位) / INIT=0 (上电不复位)
+  //=============================================================
+  logic rst_sr_a = 1'b0, rst_sr_b = 1'b0;
+  logic dest_sr_a, dest_sr_b;
+  logic dest_sr_a_at0, dest_sr_b_at0;
+  int   sr_a_edges;
+
+  xpm_sync_rst #(.STAGES(2), .INIT(1'b1)) u_sync_rst_a (
+    .src_rst(rst_sr_a), .dest_clk(clk57), .dest_rst(dest_sr_a));
+
+  xpm_sync_rst #(.STAGES(2), .INIT(1'b0)) u_sync_rst_b (
+    .src_rst(rst_sr_b), .dest_clk(clk57), .dest_rst(dest_sr_b));
+
+  // 低有效极性变体 (异步桥)
+  logic rst_n_r = 1'b1;
+  logic rst_n_dest;
+
+  xpm_rst_sync #(.STAGES(2), .RST_ACTIVE_HIGH(1'b0)) u_rst_sync_n (
+    .src_rst(rst_n_r), .dest_clk(clk57), .dest_rst(rst_n_dest));
+
+  //=============================================================
+  // 13) xpm_handshake (100M -> 57M, 8bit, 内部应答)
+  //=============================================================
+  logic        h_send = 1'b0;
+  logic [7:0]  h_din  = 8'h00;
+  logic        h_rcv;
+  logic        h_req, h_req_d = 1'b0;
+  logic [7:0]  h_dout;
+  logic [7:0]  h_last;
+  int          h_req_cnt = 0;
+
+  xpm_handshake #(.WIDTH(8), .STAGES(2)) u_handshake (
+    .src_clk(clk100), .src_data(h_din), .src_send(h_send), .src_rcv(h_rcv),
+    .dest_clk(clk57), .dest_data(h_dout), .dest_req(h_req));
+
+  // 目的端: dest_req 上升沿当拍采样 (req 为电平, 上升沿每笔只采一次)
+  always @(posedge clk57) begin
+    h_req_d <= h_req;
+    if (h_req && !h_req_d) begin
+      h_last    <= h_dout;
+      h_req_cnt <= h_req_cnt + 1;
+    end
+  end
+
+  //=============================================================
+  // 14) SIM_ASSERT_CHK=1 镜像实例: 共享 [3]/[12]/[13] 的黄金激励,
+  //     XPM 协议断言不应误触发 (run_xsim.sh 的 Error 门负责拦截)
+  //=============================================================
+  logic        h_rcv_m, h_req_m;
+  logic [7:0]  h_dout_m;
+
+  xpm_handshake #(.WIDTH(8), .STAGES(2), .SIM_ASSERT_CHK(1'b1)) u_handshake_a1 (
+    .src_clk(clk100), .src_data(h_din), .src_send(h_send), .src_rcv(h_rcv_m),
+    .dest_clk(clk57), .dest_data(h_dout_m), .dest_req(h_req_m));
+
+  logic dest_sr_m;
+
+  xpm_sync_rst #(.STAGES(2), .INIT(1'b1), .SIM_ASSERT_CHK(1'b1)) u_sync_rst_a1 (
+    .src_rst(rst_sr_a), .dest_clk(clk57), .dest_rst(dest_sr_m));
+
+  logic dest_pulse_m;
+
+  xpm_pulse_sync #(.STAGES(2), .SIM_ASSERT_CHK(1'b1)) u_pulse_sync_a1 (
+    .src_clk(clk100), .src_rst(src_rst_p), .src_pulse(src_pulse),
+    .dest_clk(clk250), .dest_rst(dest_rst_p), .dest_pulse(dest_pulse_m));
+
+  initial begin
+    #0.1;
+    dest_sr_a_at0 = dest_sr_a;
+    dest_sr_b_at0 = dest_sr_b;
+  end
+
+  // 上电自动释放节拍: INIT=1 且 src=0 时, 上电复位保持几个 dest 拍
+  int sr_a_rel_edges = 0;
+  initial begin
+    #0.2;
+    while (dest_sr_a === 1'b1) begin
+      @(posedge clk57); #1.0; sr_a_rel_edges++;
+    end
+  end
 
   //=============================================================
   // 8) rst_busy 语义: 上电 (无外部复位) / 时钟停住 时的行为
@@ -446,6 +583,7 @@ module tb_xpm_wrappers;
     repeat (2) @(posedge clk100); #1.0;
     chk("full=1 after 16 writes (nominal depth usable)", full_f1 === 1'b1);
     chk_eq("count=16 after 16 writes", cnt_f1, 16);
+    chk_eq("rd_count=16 after 16 writes (equal width)", rcnt_f1, 16);
     chk("prog tie-off: prog_full=0 while full (thresh 0 = bits off)",
         pfull_f1 === 1'b0);
 
@@ -474,6 +612,7 @@ module tb_xpm_wrappers;
     @(negedge clk100); rd_en_f1 = 1'b0;
     repeat (2) @(posedge clk100); #1.0;
     chk_eq("count=0 after drain", cnt_f1, 0);
+    chk_eq("rd_count=0 after drain", rcnt_f1, 0);
     chk("prog tie-off: prog_empty=0 while empty (thresh 0 = bits off)",
         pempty_f1 === 1'b0);
 
@@ -868,6 +1007,150 @@ module tb_xpm_wrappers;
     $display("    MEASURE asym async: after 15 words read, empty=%0b rd_count=%0d (31st byte dangling?)",
              empty_f10, rcnt_f10);
     chk("asym async: empty after all complete words", empty_f10 === 1'b1);
+
+    //-----------------------------------------------------------
+    $display("[11] xpm_sdpram (equal / asym / comb)");
+    //-----------------------------------------------------------
+    //---- A) 等宽 block, 读延迟 1 拍; 中途关 enb 一拍验 vld 门控 ----
+    sdp_we = 1'b0; sdp_enb = 1'b0; sdp_a_addr = '0; sdp_b_addr = '0; sdp_din = '0;
+    repeat (2) @(posedge clk100);
+    for (int i = 0; i < 16; i++) begin
+      @(negedge clk100);
+      sdp_we = 1'b1; sdp_a_addr = i[5:0]; sdp_din = 8'h30 + i[7:0];
+    end
+    @(negedge clk100); sdp_we = 1'b0;
+    repeat (2) @(posedge clk100);
+    for (int i = 0; i < 16; i++) begin
+      @(negedge clk100);
+      sdp_enb = (i != 8);              // 第 8 个洞关一拍
+      sdp_b_addr = i[5:0];
+      @(posedge clk100); #1.0;
+      if (i != 8) begin
+        chk_eq($sformatf("sdp eq read[%0d]", i), sdp_dout, 8'h30 + i[7:0]);
+        chk($sformatf("sdp eq vld[%0d]", i), sdp_vld === 1'b1);
+      end
+      else begin
+        chk("sdp eq vld low when enb gated", sdp_vld === 1'b0);
+      end
+    end
+    @(negedge clk100); sdp_enb = 1'b0;
+
+    //---- B) 变宽 8->16 (1:2), 期望小端拼包: 字 j = {byte 2j+1, byte 2j} ----
+    sdp2_we = 1'b0; sdp2_enb = 1'b0; sdp2_a_addr = '0; sdp2_b_addr = '0; sdp2_din = '0;
+    repeat (2) @(posedge clk100);
+    for (int i = 0; i < 8; i++) begin
+      @(negedge clk100);
+      sdp2_we = 1'b1; sdp2_a_addr = i[3:0]; sdp2_din = 8'h50 + i[7:0];
+    end
+    @(negedge clk100); sdp2_we = 1'b0;
+    repeat (2) @(posedge clk100);
+    for (int j = 0; j < 4; j++) begin
+      @(negedge clk100); sdp2_enb = 1'b1; sdp2_b_addr = j[2:0];
+      @(posedge clk100); #1.0;
+      sdp2_exp[7:0]  = 8'h50 + j + j;
+      sdp2_exp[15:8] = sdp2_exp[7:0] + 8'h01;
+      chk_eq($sformatf("sdp asym word[%0d] (LSB-first)", j), sdp2_dout, sdp2_exp);
+      chk($sformatf("sdp asym vld[%0d]", j), sdp2_vld === 1'b1);
+    end
+    @(negedge clk100); sdp2_enb = 1'b0;
+
+    //---- C) distributed 组合读 (LATENCY_B=0): enb/addrb 稳定即出数 ----
+    sdp3_we = 1'b0; sdp3_enb = 1'b0; sdp3_a_addr = '0; sdp3_b_addr = '0; sdp3_din = '0;
+    repeat (2) @(posedge clk100);
+    for (int i = 0; i < 4; i++) begin
+      @(negedge clk100);
+      sdp3_we = 1'b1; sdp3_a_addr = i[3:0]; sdp3_din = 8'h70 + i[7:0];
+    end
+    @(negedge clk100); sdp3_we = 1'b0;
+    repeat (2) @(posedge clk100);
+    @(negedge clk100);
+    sdp3_enb = 1'b1; sdp3_b_addr = 4'd2; #1.0;
+    chk_eq("sdp comb read[2] (LATENCY_B=0)", sdp3_dout, 8'h72);
+    chk("sdp comb vld same cycle as enb", sdp3_vld === 1'b1);
+    @(negedge clk100); sdp3_enb = 1'b0; #1.0;
+    chk("sdp comb vld low when enb=0", sdp3_vld === 1'b0);
+
+    //---- D) 独立时钟: 写域 100M, 读域 57M ----
+    sdp4_we = 1'b0; sdp4_enb = 1'b0; sdp4_a_addr = '0; sdp4_b_addr = '0; sdp4_din = '0;
+    repeat (2) @(posedge clk100);
+    for (int i = 0; i < 4; i++) begin
+      @(negedge clk100);
+      sdp4_we = 1'b1; sdp4_a_addr = i[3:0]; sdp4_din = 16'hB000 + i[15:0];
+    end
+    @(negedge clk100); sdp4_we = 1'b0;
+    repeat (4) @(posedge clk57);
+    for (int i = 0; i < 4; i++) begin
+      @(negedge clk57); sdp4_enb = 1'b1; sdp4_b_addr = i[3:0];
+      @(posedge clk57); #1.0;
+      chk_eq($sformatf("sdp indclk read[%0d]", i), sdp4_dout, 16'hB000 + i[15:0]);
+      chk($sformatf("sdp indclk vld[%0d]", i), sdp4_vld === 1'b1);
+    end
+    @(negedge clk57); sdp4_enb = 1'b0; #1.0;
+    // 寄存读的 vld 是流水线跟踪: enb 撤低后还有一拍尾巴 (对应保持的
+    // 最后一次读结果), 再下一拍清零
+    chk("sdp indclk vld held 1 clk after enb low (pipeline tail)",
+        sdp4_vld === 1'b1);
+    @(posedge clk57); #1.0;
+    chk("sdp indclk vld low after pipeline drained", sdp4_vld === 1'b0);
+
+    //-----------------------------------------------------------
+    $display("[12] xpm_sync_rst (INIT=1 / INIT=0)");
+    //-----------------------------------------------------------
+    chk("sync_rst INIT=1: dest_rst=1 at t=0 (power-on reset)", dest_sr_a_at0 === 1'b1);
+    chk("sync_rst INIT=0: dest_rst=0 at t=0 (not in reset)",   dest_sr_b_at0 === 1'b0);
+    // 上电复位保持 = GSR 附加拍数 (工具相关) + STAGES 拍链移位;
+    // 可依赖的是"上电即处于复位态"和"至少 STAGES 拍", 不要依赖具体拍数
+    $display("    MEASURE sync_rst: power-on reset held %0d dest clk (STAGES=2, incl GSR)",
+             sr_a_rel_edges);
+    chk("sync_rst INIT=1 holds power-on reset >= STAGES dest clk",
+        sr_a_rel_edges >= 2);
+
+    // 同步置位: src 拉高后第 2 个 dest 沿才置位 (区别于异步桥的立即置位)
+    @(negedge clk57); rst_sr_a = 1'b1;
+    @(posedge clk57); #1.0;
+    chk("sync_rst assert is synchronous (not yet at 1st edge)",
+        dest_sr_a === 1'b0);
+    @(posedge clk57); #1.0;
+    chk("sync_rst asserted at 2nd dest edge", dest_sr_a === 1'b1);
+
+    // 同步释放: src 拉低后第 2 个 dest 沿释放
+    @(negedge clk57); rst_sr_a = 1'b0;
+    @(posedge clk57); #1.0;
+    chk("sync_rst release is synchronous (still high at 1st edge)",
+        dest_sr_a === 1'b1);
+    @(posedge clk57); #1.0;
+    chk("sync_rst released at 2nd dest edge", dest_sr_a === 1'b0);
+
+    //---- 低有效极性变体: 1ns 低脉冲异步捕获, 同步释放回高 ----
+    chk("rst_sync_n idle: rst_n_dest=1 (released)", rst_n_dest === 1'b1);
+    @(posedge clk100); #2.0;
+    rst_n_r = 1'b0; #1.0; rst_n_r = 1'b1;
+    #0.5;
+    chk("rst_sync_n: async low pulse captured (dest low)", rst_n_dest === 1'b0);
+    wait (rst_n_dest === 1'b1);
+    chk("rst_sync_n released synchronously", rst_n_dest === 1'b1);
+
+    //-----------------------------------------------------------
+    $display("[13] xpm_handshake (100M -> 57M, 8 transfers)");
+    //-----------------------------------------------------------
+    h_send = 1'b0; h_din = 8'h00;
+    repeat (4) @(posedge clk57); #1.0;
+    chk("handshake idle: dest_req=0", h_req === 1'b0);
+
+    for (int i = 0; i < 8; i++) begin
+      h_din = 8'h80 + i[7:0];
+      @(negedge clk100); h_send = 1'b1;   // 电平式: 保持到 rcv 返回
+      wait (h_rcv === 1'b1);              // 目的端已接收
+      @(negedge clk100); h_send = 1'b0;
+      wait (h_rcv === 1'b0);              // 握手完全结束
+      wait (h_req_cnt == i + 1);          // 目的端已采样本笔
+      @(posedge clk57); #1.0;
+      chk_eq($sformatf("handshake data[%0d]", i), h_last, 8'h80 + i[7:0]);
+    end
+    chk_eq("handshake transfer count", h_req_cnt, 8);
+    chk("handshake idle after last: dest_req=0", h_req === 1'b0);
+    // [14] 镜像实例与主实例逐拍一致
+    chk("handshake mirror tracks main (rcv/req)", h_rcv_m === h_rcv && h_req_m === h_req);
 
     //-----------------------------------------------------------
     $display("=== RESULT: %0d checks, %0d failures ===", checks, errors);

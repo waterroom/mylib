@@ -159,6 +159,8 @@ module xpm_async_fifo #(
   initial begin
     if (MEM_TYPE == "uram")
       $error("xpm_async_fifo: MEM_TYPE=\"uram\" 不能用于异步 FIFO -- XPM 静默失败 (URAM 分支不生成, 输出悬空), 请改用 \"block\"/\"distributed\"/\"auto\"");
+    if (RELATED_CLOCKS == 1 && CDC_STAGES != 2)
+      $error("xpm_async_fifo: RELATED_CLOCKS=1 时 CDC_STAGES 必须保持默认 2 (XPM DRC 要求, 本层预检提前说清)");
     if (RD_DW != DW) begin
       if (MEM_TYPE != "block" && MEM_TYPE != "uram")
         $error("xpm_async_fifo: 变宽 (DW=%0d -> RD_DW=%0d) 时 MEM_TYPE 只能 \"block\"/\"uram\" (auto 不保证行为, distributed/LUTRAM 不支持变宽)", DW, RD_DW);

@@ -87,6 +87,43 @@ module synth_top #(
   output logic        aw_valid,
   output logic [10:0] aw_rd_count,
 
+  // 同步 FIFO (URAM): 验证 MEM_TYPE="uram" 综合映射 (仅 UltraScale+ 器件)
+  input  logic        u_wr_en,
+  input  logic [63:0] u_din,
+  output logic        u_full,
+  output logic        u_empty,
+  input  logic        u_rd_en,
+  output logic [63:0] u_dout,
+  output logic        u_rst_busy,
+
+  // 简单双口 RAM: 变宽 4:1 (64->16) + 读延迟 2 拍, 验证 sdpram 综合路径
+  input  logic [6:0]  s_addra,
+  input  logic [63:0] s_dina,
+  input  logic        s_wea,
+  input  logic [8:0]  s_addrb,
+  input  logic        s_enb,
+  output logic [15:0] s_doutb,
+  output logic        s_doutb_vld,
+
+  // 简单双口 RAM: 独立时钟模式冒烟 (common_clock 已有实例)
+  input  logic        s2_wea,
+  input  logic [15:0] s2_dina,
+  input  logic [3:0]  s2_addra,
+  input  logic        s2_enb,
+  input  logic [3:0]  s2_addrb,
+  output logic [15:0] s2_doutb,
+
+  // 握手跨时钟: 多 bit 数据
+  input  logic        h_send,
+  input  logic [15:0] h_data,
+  output logic        h_rcv,
+  output logic        h_req,
+  output logic [15:0] h_dest_data,
+
+  // 同步复位同步器
+  input  logic        sr_src,
+  output logic        sr_dest,
+
   // CDC / 复位桥
   output logic        bit_out,
   output logic [15:0] bus_out,
@@ -158,5 +195,40 @@ module synth_top #(
     .rd_clk(clk_b), .rd_en(aw_rd_en), .dout(aw_dout),
     .empty(aw_empty), .valid(aw_valid), .rd_count(aw_rd_count),
     .rst(rst_a));
+
+  // ---- 同步 FIFO: URAM, 512 深 64bit (大缓存的典型配置) ----
+  xpm_sync_fifo #(
+    .DW(64), .DEPTH(512), .READ_MODE("std"), .MEM_TYPE("uram")
+  ) u_sfifo_uram (
+    .clk(clk_a), .rst(rst_a),
+    .wr_en(u_wr_en), .din(u_din), .full(u_full),
+    .rd_en(u_rd_en), .dout(u_dout), .empty(u_empty),
+    .rst_busy(u_rst_busy));
+
+  // ---- 简单双口 RAM: 变宽 4:1, 读延迟 2 拍, common_clock ----
+  xpm_sdpram #(
+    .DW_A(64), .DW_B(16), .DEPTH(128), .LATENCY_B(2), .MEM_TYPE("block")
+  ) u_sdpram (
+    .clka(clk_a), .addra(s_addra), .dina(s_dina), .wea(s_wea),
+    .clkb(clk_a), .enb(s_enb), .addrb(s_addrb),
+    .doutb(s_doutb), .doutb_vld(s_doutb_vld));
+
+  // ---- 简单双口 RAM: 独立时钟模式 (时序约束见 constrs/xpm_wrappers.xdc) ----
+  xpm_sdpram #(
+    .DW_A(16), .DEPTH(16), .LATENCY_B(1), .MEM_TYPE("block"),
+    .CLOCKING_MODE("independent_clock")
+  ) u_sdpram_async (
+    .clka(clk_a), .addra(s2_addra), .dina(s2_dina), .wea(s2_wea),
+    .clkb(clk_b), .enb(s2_enb), .addrb(s2_addrb),
+    .doutb(s2_doutb), .doutb_vld());
+
+  // ---- 握手跨时钟: 多 bit 数据, 目的端自动应答 ----
+  xpm_handshake #(.WIDTH(16), .STAGES(2)) u_handshake (
+    .src_clk(clk_a), .src_data(h_data), .src_send(h_send), .src_rcv(h_rcv),
+    .dest_clk(clk_b), .dest_data(h_dest_data), .dest_req(h_req));
+
+  // ---- 同步复位同步器 ----
+  xpm_sync_rst #(.STAGES(2), .INIT(1'b1)) u_sync_rst (
+    .src_rst(sr_src), .dest_clk(clk_b), .dest_rst(sr_dest));
 
 endmodule

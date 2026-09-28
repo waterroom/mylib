@@ -32,6 +32,9 @@ read_verilog -sv [list \
     "$root/xpm_pulse_sync.sv" \
     "$root/xpm_sync_fifo.sv" \
     "$root/xpm_async_fifo.sv" \
+    "$root/xpm_sync_rst.sv" \
+    "$root/xpm_sdpram.sv" \
+    "$root/xpm_handshake.sv" \
     "$here/synth_top.sv" ]
 
 # 纯 RTL 检查, 不需要完整器件布线资源

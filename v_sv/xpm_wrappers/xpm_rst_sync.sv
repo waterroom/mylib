@@ -10,12 +10,15 @@
 //   不会有"复位撤销沿落在时钟沿附近"的 recovery 问题。
 //
 // 端口:
-//   src_rst   源复位, 高有效。任意宽度 (含远窄于目标周期的异步脉冲) 都会被捕获。
+//   src_rst   源复位 (极性由 RST_ACTIVE_HIGH 决定, 默认高有效)。
+//             任意宽度 (含远窄于目标周期的异步脉冲) 都会被捕获。
 //   dest_clk  目标时钟
-//   dest_rst  目标域复位, 高有效, 异步置位 / 同步释放
+//   dest_rst  目标域复位, 异步置位 / 同步释放, 极性同 src_rst
 //
 // 参数:
 //   STAGES   目标域同步级数 (DEST_SYNC_FF), 合法 2..10, 默认 2
+//   RST_ACTIVE_HIGH 复位极性: 1 (默认) = 高有效; 0 = 低有效 (src_rst/dest_rst
+//            都变低有效, 直接接工程的 rst_n)
 //
 // 说明:
 //   - 本库统一采用"高有效复位"风格 (与 XPM FIFO 的 rst 极性一致)。
@@ -40,7 +43,8 @@
 `timescale 1ns / 1ps
 
 module xpm_rst_sync #(
-  parameter int unsigned STAGES = 2
+  parameter int unsigned STAGES          = 2,
+  parameter bit          RST_ACTIVE_HIGH = 1'b1
 ) (
   input  logic src_rst,
   input  logic dest_clk,
@@ -50,7 +54,7 @@ module xpm_rst_sync #(
   xpm_cdc_async_rst #(
     .DEST_SYNC_FF    (STAGES),
     .INIT_SYNC_FF    (0),
-    .RST_ACTIVE_HIGH (1)
+    .RST_ACTIVE_HIGH (RST_ACTIVE_HIGH)
   ) u_cdc_async_rst (
     .src_arst  (src_rst),
     .dest_clk  (dest_clk),

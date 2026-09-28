@@ -41,6 +41,7 @@ echo "== xvlog (编译 wrapper / tb / XPM 源码) =="
 "${XV}/xvlog" -sv \
     "${ROOT}/xpm_cdc_sync.sv"  "${ROOT}/xpm_rst_sync.sv"  "${ROOT}/xpm_pulse_sync.sv" \
     "${ROOT}/xpm_sync_fifo.sv" "${ROOT}/xpm_async_fifo.sv" \
+    "${ROOT}/xpm_sync_rst.sv"  "${ROOT}/xpm_sdpram.sv"    "${ROOT}/xpm_handshake.sv" \
     "${HERE}/tb_xpm_wrappers.sv" \
     "${XPM}/xpm_cdc/hdl/xpm_cdc.sv" \
     "${XPM}/xpm_fifo/hdl/xpm_fifo.sv" \
@@ -54,6 +55,10 @@ echo "== xsim =="
 "${XV}/xsim" tb_sim -runall | tee xsim_out.txt
 
 if grep -q "=== ALL PASS ===" xsim_out.txt; then
+    if grep -qE "^Error:" xsim_out.txt; then
+        echo "== 仿真输出含 Error (疑似 XPM 断言触发), 完整输出见 ${WORK}/xsim_out.txt ==" >&2
+        exit 1
+    fi
     echo "== 自检通过 =="
 else
     echo "== 自检失败, 完整输出见 ${WORK}/xsim_out.txt ==" >&2

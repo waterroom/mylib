@@ -33,6 +33,8 @@
 //                  默认 (阈值 0) = 不启用, 恒 0。
 //   valid          读数据有效 (std 模式: rd_en 后 READ_LATENCY 拍; fwft 模式:
 //                  dout 有数据即有效)。把 dout 打拍使用时用 valid 判断。
+//   rd_count       读侧视角的占用量 (宽度 RCNT_W)。等宽时与 count 同值;
+//                  变宽时单位是读侧字 (count 是写侧字), 读侧流控看它。
 //   underflow      读空还读时的下溢指示 (1 拍脉冲)
 //
 // 参数:
@@ -135,7 +137,8 @@ module xpm_sync_fifo #(
   output logic             almost_empty,
   output logic             prog_empty,
   output logic             valid,
-  output logic             underflow
+  output logic             underflow,
+  output logic [RCNT_W-1:0] rd_count
 );
 
   // 复位桥: 异步置位 / 同步释放 / 保证 >= 2 个 clk 的复位宽度。
@@ -215,7 +218,7 @@ module xpm_sync_fifo #(
     .dout          (dout),
     .empty         (empty),
     .prog_empty    (prog_empty),         // 特性位未开时 XPM 输出恒 0
-    .rd_data_count (),
+    .rd_data_count (rd_count),
     .underflow     (underflow),
     .rd_rst_busy   (),                 // 同步 FIFO 内部 == wr_rst_busy
     .almost_empty  (almost_empty),

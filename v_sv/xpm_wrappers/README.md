@@ -1,5 +1,8 @@
 # xpm_wrappers —— Xilinx XPM 常用宏的薄封装
 
+> **库版本 1.0**（2026-09）：8 模块 + 异步时钟组约束模板；自检 290 项，
+> Vivado 2018.3 / 2022.1 / 2024.2 三版本回归；"已验证的事实" #1–#17。
+
 Vivado 自带 XPM（Xilinx Parameterized Macros）是 Xilinx 器件的官方基础库，
 CDC / FIFO 这类"看着简单、坑极深"的基础设施应当直接用 XPM 而不是手写。
 但 XPM 的**接口名跨代稳定、参数契约不稳定**：合法参数值、可用特性、默认行为
@@ -20,8 +23,12 @@ Vivado 版本只需要改这一层。这一层只覆盖日常最高频的几件�
 | `xpm_pulse_sync.sv` | `xpm_pulse_sync` | `xpm_cdc_pulse` | 单周期脉冲 / 事件跨时钟 |
 | `xpm_sync_fifo.sv` | `xpm_sync_fifo` | `xpm_fifo_sync` | 同步 FIFO |
 | `xpm_async_fifo.sv` | `xpm_async_fifo` | `xpm_fifo_async` | 异步 FIFO（跨时钟域数据通路） |
-| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（214 项检查） |
-| `sim/run_xsim.sh` | — | — | 一键跑 xsim 自检 |
+| `xpm_sync_rst.sv` | `xpm_sync_rst` | `xpm_cdc_sync_rst` | 同步复位同步器（置位/释放全同步，上电即复位可选） |
+| `xpm_sdpram.sv` | `xpm_sdpram` | `xpm_memory_sdpram` | 简单双口 RAM（一写一读，缓冲/延迟线，带 `doutb_vld` 跟踪） |
+| `xpm_handshake.sv` | `xpm_handshake` | `xpm_cdc_handshake` | 多 bit 数据握手跨时钟（低频寄存器值/事件伴随数据） |
+| `constrs/xpm_wrappers.xdc` | — | — | 时序约束模板（异步时钟组声明，按工程时钟对补全） |
+| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（290 项检查，含 SIM_ASSERT_CHK=1 断言镜像） |
+| `sim/run_xsim.sh` / `run_xsim_all.sh` | — | — | 单版本跑自检 / 三版本一键回归 |
 | `synth/synth_top.sv` `synth/synth_check.tcl` | — | — | 真实器件综合检查（默认 xczu48dr） |
 
 命名说明：wrapper 名和官方宏名**刻意错开**（官方是 `xpm_fifo_sync`，本层叫
@@ -29,8 +36,9 @@ Vivado 版本只需要改这一层。这一层只覆盖日常最高频的几件�
 
 ## 统一约定
 
-* **复位一律高有效**（与 XPM FIFO 的 `rst` 极性一致）。工程里用低有效
-  `rst_n` 时在外层取反，或直接例化原语把 `RST_ACTIVE_HIGH` 置 0。
+* **复位默认高有效**（与 XPM FIFO 的 `rst` 极性一致）。`xpm_rst_sync` /
+  `xpm_sync_rst` 可用 `RST_ACTIVE_HIGH=0` 切低有效直接接 `rst_n`；
+  FIFO 的 `rst` 仍固定高有效，低有效工程在外层取反。
 * **复位风格一律"异步置位、同步释放"**：任意宽度的异步复位脉冲都能被捕获
   （实测 1ns 脉冲有效），撤销沿与目标时钟对齐，不会出现复位撤销沿落在
   时钟沿附近的 recovery 问题。
@@ -72,6 +80,20 @@ xpm_async_fifo #(.DW(64), .RD_DW(16), .DEPTH(256), .MEM_TYPE("block")) u_wide (
     .wr_clk(clk_a), .wr_en(wr_en), .din(din64), .full(full), .wr_count(wcnt),
     .rd_clk(clk_b), .rd_en(rd_en), .dout(dout16), .empty(empty),
     .valid(vld), .rd_count(rcnt), .rst(rst));
+
+// 简单双口 RAM 延迟线: 读延迟 1 拍, doutb_vld 与数据对齐
+xpm_sdpram #(.DW_A(8), .DEPTH(64), .LATENCY_B(1)) u_delay (
+    .clka(clk), .addra(waddr), .dina(din), .wea(we),
+    .clkb(clk), .enb(1'b1), .addrb(raddr), .doutb(dout), .doutb_vld(dout_vld));
+
+// 同步复位同步器: 上电即处于复位态 (INIT=1), 置位/释放全同步
+xpm_sync_rst #(.STAGES(2), .INIT(1'b1)) u_sr (
+    .src_rst(soft_rst), .dest_clk(clk), .dest_rst(rst));
+
+// 多 bit 低频数据握手跨时钟 (目的端零逻辑, req 上升沿当拍采样)
+xpm_handshake #(.WIDTH(32)) u_cfg_send (
+    .src_clk(clk_a), .src_data(cfg_word), .src_send(cfg_load), .src_rcv(cfg_sent),
+    .dest_clk(clk_b), .dest_data(cfg_word_b), .dest_req(cfg_upd));
 ```
 
 ## 参数速查
@@ -82,7 +104,10 @@ xpm_async_fifo #(.DW(64), .RD_DW(16), .DEPTH(256), .MEM_TYPE("block")) u_wide (
 | `xpm_rst_sync` | `STAGES`(2) | 2..10 |
 | `xpm_pulse_sync` | `STAGES`(2) `REG_OUT`(0) `SIM_ASSERT_CHK`(0) | `STAGES`: 2..10；`REG_OUT=1` 让 `dest_pulse` 在目标域再打一拍（扇出大时改善时序） |
 | `xpm_sync_fifo` | `DW`(8) `RD_DW`(=DW) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `PROG_FULL_THRESH`(0) `PROG_EMPTY_THRESH`(0) `CNT_W`(推导) `RCNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；等宽时 `MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+）；`RD_DW` 变宽时限 2 的幂比例且 `MEM_TYPE` 只能 "block"/"uram"（见"已验证的事实"12）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；prog 阈值 0 = 不启用（恒 0），fwft 实际水线 = 阈值−2 |
-| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（实测 XPM 静默失败不报错，见"已验证的事实"13，本层预检直接 `$error`）；变宽规则同上 |
+| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2（预检拦截）；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（实测 XPM 静默失败不报错，见"已验证的事实"13，本层预检直接 `$error`）；变宽规则同上 |
+| `xpm_sync_rst` | `STAGES`(2) `INIT`(1) `RST_ACTIVE_HIGH`(1) `SIM_ASSERT_CHK`(0) | `STAGES`: 2..10；`INIT=1`（默认）上电即处于复位态（XPM 里 `INIT` 仅在 `INIT_SYNC_FF=1` 时生效，本层已绑定）；`RST_ACTIVE_HIGH=0` 切低有效（本层两侧取反实现）；src_rst 须是电平量（置位保持 ≥1 个 dest 周期），窄脉冲用 `xpm_rst_sync` |
+| `xpm_sdpram` | `DW_A`(8) `DW_B`(=DW_A) `DEPTH`(64) `LATENCY_B`(1) `MEM_TYPE`("auto") `CLOCKING_MODE`("common_clock") `RD_MODE_B`("no_change") `AW_A/AW_B`(推导) | `DEPTH` 2 的幂 ≥2（本库约定，预检拦截）；变宽限 2 的幂比例且 `MEM_TYPE` 只能 "block"/"uram"（同 FIFO 规则）；**`LATENCY_B=0`（组合读）仅 "distributed"**；**distributed 只支持 `RD_MODE_B="read_first"`**（两条都预检拦截）；独立时钟模式需自行加时钟组约束（模板见 `constrs/`） |
+| `xpm_handshake` | `WIDTH`(8) `STAGES`(2) `SIM_ASSERT_CHK`(0) | `WIDTH`: 1..1024；`STAGES` 同时喂 DEST/SRC_SYNC_FF（2..10）；**`src_send` 必须电平式保持到 `src_rcv` 返回**（单拍脉冲会被目的域漏采且不报错，见"已验证的事实"16）；每笔传输需两域往返（约 `STAGES` 拍 × 2），高吞吐用异步 FIFO |
 
 `CNT_W` 是 `count` 的位宽，由 `DEPTH` 自动推导（`clog2(DEPTH)+1`），不要覆盖。
 
@@ -98,6 +123,20 @@ xpm_async_fifo #(.DW(64), .RD_DW(16), .DEPTH(256), .MEM_TYPE("block")) u_wide (
 异步 FIFO（`xpm_async_fifo`）：写侧 `wr_clk/wr_en/din[DW-1:0]/full/almost_full/prog_full/wr_count[CNT_W-1:0]/overflow/wr_rst_busy`，
 读侧 `rd_clk/rd_en/dout[RD_DW-1:0]/empty/almost_empty/prog_empty/valid/underflow/rd_count[RCNT_W-1:0]/rd_rst_busy`，
 外加公共 `rst`。
+
+同步 FIFO（`xpm_sync_fifo`）读侧另有 `rd_count[RCNT_W-1:0]`（读侧视角占用量；
+等宽时与 `count` 同值，变宽时单位是读侧字）。
+
+简单双口 RAM（`xpm_sdpram`）：写侧 `clka/addra[AW_A-1:0]/dina[DW_A-1:0]/wea`，
+读侧 `clkb/enb/addrb[AW_B-1:0]/doutb[DW_B-1:0]/doutb_vld`。
+
+复位同步器：`xpm_rst_sync`（异步置位/同步释放）与 `xpm_sync_rst`（置位/释放
+全同步，`INIT=1` 上电即复位）——两者名字只差词序，选型见"用法示例"与各文件
+头部对照表；均支持 `RST_ACTIVE_HIGH=0` 低有效。
+
+握手（`xpm_handshake`）：源侧 `src_clk/src_data[WIDTH-1:0]/src_send/src_rcv`，
+目的侧 `dest_clk/dest_data[WIDTH-1:0]/dest_req`（目的端零握手逻辑，内部
+自动应答）。
 
 * `valid`：std 模式为 `rd_en` 后 `READ_LATENCY` 拍的"数据有效"（实测与 `dout`
   同拍），fwft 模式为"`dout` 上有数据"。把 `dout` 打拍使用时用它判断。
@@ -274,18 +313,48 @@ testbench 就是这么写的）。两种做法选一个即可。
    报错，所有输出悬空（实测 `empty=z`、`rst_busy` 恒 x）——比报错危险得
    多。本层异步 wrapper 预检直接 `$error` 拦截；同步 FIFO 若真要用 URAM，
    上板前用 `synth/synth_check.tcl` 指一个带 URAM 的器件确认映射。
+14. **sdpram 的 distributed 两条暗坑**（自检 [11] 实测）：`LATENCY_B=0`
+   （组合读）只允许 "distributed"（block/uram 物理必须寄存读，XPM_MEMORY
+   DRC）；反过来 distributed 又**只支持 `RD_MODE_B="read_first"`**（XPM
+   默认值 "no_change" 会直接 DRC 报错）——两条都由本层预检提前拦下。
+   变宽规则与 FIFO 一致（2 的幂比例、distributed 禁止、小端拼包，实测
+   8→16 读出 `{b1,b0}`）。`doutb_vld` 是本层生成的 `enb` 移位链，与
+   `doutb` 数据严格对齐，延迟线用法不必再手打 valid 逻辑。
+15. **`xpm_cdc_sync_rst` 的 INIT 陷阱**（源码核实 + 实测）：XPM 的 `INIT`
+   参数只在 `INIT_SYNC_FF=1` 时生效（此时整条同步链初值 = INIT），置 0 时
+   同步链恒 0、`INIT` 形同虚设——本层 `xpm_sync_rst` 把两者绑定为同一个
+   `INIT` 参数。上电复位保持拍数 = GSR 附加拍数（工具相关，xsim 2022.1
+   实测 8 拍）+ STAGES 拍链移位；可依赖的是"上电即处于复位态"和"至少
+   STAGES 拍"，不要依赖具体拍数。
+16. **握手的 `src_send` 必须电平式**（源码核实 + 实测）：`xpm_cdc_handshake`
+   对 `src_send` 只打一拍直进电平同步器（`src_sendd_nxt = src_send`，无
+   延长逻辑），**单拍脉冲会被目的时钟整笔漏采且不报任何错**（自检首版就
+   因此超时）。正确协议：置高保持 → `src_rcv` 高 → 撤低 → 等 `src_rcv`
+   撤销再发下一笔。内部应答模式（`DEST_EXT_HSK=0`，本层固化）下
+   `dest_req`（ack 寄存器）与 `dest_data` 同沿更新，目的端在 req 上升沿
+   **当拍采样**即可；数据路径无同步链、稳定性靠握手保证，综合期依赖
+   XPM 的 set_max_delay 约束（时钟组声明见 `constrs/xpm_wrappers.xdc`）。
+17. **`doutb_vld` 的流水线尾巴**（实测进事实清单）：寄存读（`LATENCY_B>=1`）
+   的 `doutb_vld` 是 `enb` 的移位跟踪，**enb 撤低后还会多保持 1 拍**（对应
+   `doutb` 保持的最后一次读结果），再下一拍清零；组合读（`LATENCY_B=0`）
+   则与 `enb` 同起同落。上游用 `vld` 门控取数时两种语义都自洽。
+   断言通道：自检 [14] 用 `SIM_ASSERT_CHK=1` 镜像实例共享黄金激励，
+   `run_xsim.sh` 的 Error 门确认 XPM 协议断言在正确用法下不误触发。
 
 ## 验证
 
 ```bash
-# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 214 项检查
+# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 279 项检查
 # 已回归版本: 2018.3 / 2022.1 / 2024.2 (三版 MEASURE 实测值一致)
+# bash sim/run_xsim_all.sh    # 三版本一键回归 (版本路径在脚本内维护)
 bash sim/run_xsim.sh            # 默认 Vivado 2022.1
 bash sim/run_xsim.sh 2018.3     # 换版本 (按 /c/Xilinx/Vivado/<ver> 推导)
 VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh   # 安装在别处时
 
 # 综合检查: 真实器件跑一遍综合 (默认 xczu48dr, 你的 RFSoC)
 vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
+
+# 时序约束: 把 constrs/xpm_wrappers.xdc 里的时钟组模板按工程时钟对补全
 ```
 
 两个脚本都会把中间产物放在 `sim/xsim_work/`、`synth/synth_work/`（可随时删）。
@@ -300,6 +369,10 @@ vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
 
 * FIFO 的 ECC（`ECC_MODE`）、`sleep` 低功耗、`wr_ack`、AXI-Stream 接口的
   `xpm_fifo_axis`；
+* sdpram 的 ECC、字节写使能（`BYTE_WRITE_WIDTH_A`）、存储器初始化
+  （`MEMORY_INIT_*`）、`rstb` 输出复位——数据 RAM 场景用不到，直接例化
+  XPM 原语即可；`xpm_memory_tdpram`（真双口）/ `spram`（单口）/
+  `dprom`（ROM）本层未包，按 `xpm_sdpram.sv` 同样思路加即可；
 * 握手类 CDC（`xpm_cdc_handshake`）、格雷码（`xpm_cdc_gray`）、
   低延迟握手（`xpm_cdc_low_latency_handshake`）；
 * 存储器（`xpm_memory_sdpram` / `tdpram` / `spram`）——本层还没包，按同样

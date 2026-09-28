@@ -11,6 +11,8 @@
 //   rst_busy 语义  上电 (无外部复位) / 时钟停住 / 复位窗口内写入 的行为
 //   prog 水线      PROG_FULL/EMPTY_THRESH 置起边界 (同步+异步) 与
 //                  阈值 0 时输出恒 0 的默认契约
+//   非对称位宽     sync 4:1 / async 1:2 数据完整性 (小端拼包实测)、
+//                  count 单位、DEPTH-1 规则按写侧字计
 //
 // 运行: bash sim/run_xsim.sh   (需要 Vivado 的 xvlog/xelab/xsim)
 //
@@ -230,6 +232,38 @@ module tb_xpm_wrappers;
     .empty(empty_f8), .almost_empty(aempty_f8), .prog_empty(pempty_f8),
     .valid(valid_f8), .underflow(unf_f8),
     .rd_count(rcnt_f8), .rd_rst_busy(rdbusy_f8), .rst(rst_f8));
+
+  //=============================================================
+  // 10) 非对称位宽: sync 写 32->读 8 (4:1), async 写 8->读 16 (1:2)
+  //=============================================================
+  logic        rst_f9    = 1'b1;
+  logic        wr_en_f9  = 1'b0, rd_en_f9 = 1'b0;
+  logic [31:0] din_f9    = 32'h0;
+  logic [7:0]  dout_f9;
+  logic        full_f9, empty_f9, valid_f9, wrbusy_f9;
+  logic [4:0]  cnt_f9;
+
+  xpm_sync_fifo #(.DW(32), .RD_DW(8), .DEPTH(16), .MEM_TYPE("block")) u_sfifo_asym (
+    .clk(clk100), .rst(rst_f9),
+    .wr_en(wr_en_f9), .din(din_f9), .full(full_f9), .count(cnt_f9),
+    .rst_busy(wrbusy_f9),
+    .rd_en(rd_en_f9), .dout(dout_f9), .empty(empty_f9), .valid(valid_f9));
+
+  logic        rst_f10   = 1'b1;
+  logic        wr_en_f10 = 1'b0, rd_en_f10 = 1'b0;
+  logic [7:0]  din_f10   = 8'h00;
+  logic [15:0] dout_f10;
+  logic [15:0] exp16;
+  logic        full_f10, empty_f10, valid_f10, wrbusy_f10, rdbusy_f10;
+  logic [5:0]  wcnt_f10;
+  logic [4:0]  rcnt_f10;
+
+  xpm_async_fifo #(.DW(8), .RD_DW(16), .DEPTH(32), .MEM_TYPE("block")) u_afifo_asym (
+    .wr_clk(clk100), .wr_en(wr_en_f10), .din(din_f10),
+    .full(full_f10), .wr_count(wcnt_f10), .wr_rst_busy(wrbusy_f10),
+    .rd_clk(clk57), .rd_en(rd_en_f10), .dout(dout_f10),
+    .empty(empty_f10), .valid(valid_f10), .rd_count(rcnt_f10),
+    .rd_rst_busy(rdbusy_f10), .rst(rst_f10));
 
   //=============================================================
   // 8) rst_busy 语义: 上电 (无外部复位) / 时钟停住 时的行为
@@ -759,6 +793,81 @@ module tb_xpm_wrappers;
     repeat (4) @(posedge clk57); #1.0;
     chk("async prog_empty stays 1 when empty",
         pempty_f8 === 1'b1 && empty_f8 === 1'b1);
+
+    //-----------------------------------------------------------
+    $display("[10] asymmetric width (sync 32->8, async 8->16)");
+    //-----------------------------------------------------------
+    //---- sync: 写 32bit -> 读 8bit (DEPTH=16 写字 = 64 读字节) ----
+    // 字内字节 = 全局字节序号, 期望读出 0,1,2,...,15 (小端拼包)
+    wr_en_f9 = 1'b0; rd_en_f9 = 1'b0; rst_f9 = 1'b1;
+    repeat (5) @(posedge clk100);
+    rst_f9 = 1'b0;
+    wait (!wrbusy_f9);
+    repeat (2) @(posedge clk100); #1.0;
+
+    for (int i = 0; i < 4; i++) begin
+      @(negedge clk100);
+      wr_en_f9 = 1'b1;
+      for (int k = 0; k < 4; k++) din_f9[k*8 +: 8] = i*4 + k;
+    end
+    @(negedge clk100); wr_en_f9 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk_eq("asym sync: count=4 (write-word units)", cnt_f9, 4);
+
+    for (int i = 0; i < 16; i++) begin
+      @(negedge clk100); rd_en_f9 = 1'b1;
+      @(posedge clk100); #1.0;
+      chk_eq($sformatf("asym sync byte[%0d] (LSB-first packing)", i),
+             dout_f9, i[7:0]);
+      chk($sformatf("asym sync valid[%0d]", i), valid_f9 === 1'b1);
+    end
+    @(negedge clk100); rd_en_f9 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk("asym sync: empty after 16 bytes", empty_f9 === 1'b1);
+    chk_eq("asym sync: count=0 after drain", cnt_f9, 0);
+
+    //---- async: 写 8bit -> 读 16bit (DEPTH=32 写字 = 16 读字) ----
+    wr_en_f10 = 1'b0; rd_en_f10 = 1'b0; rst_f10 = 1'b1;
+    repeat (6) @(posedge clk100);
+    rst_f10 = 1'b0;
+    wait (!wrbusy_f10);
+    wait (!rdbusy_f10);
+    repeat (4) @(posedge clk57); #1.0;
+    chk("asym async: empty after reset", empty_f10 === 1'b1);
+
+    // 写 30 字节 (= 15 读字) 预期 full=0; 第 31 个预期 full=1
+    // (DEPTH-1 规则按写侧字计, 读侧凑整字)
+    for (int i = 0; i < 30; i++) begin
+      @(negedge clk100); wr_en_f10 = 1'b1; din_f10 = 8'h10 + i[7:0];
+    end
+    @(negedge clk100); wr_en_f10 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk_eq("asym async: count=30 write words", wcnt_f10, 30);
+    chk("asym async: full=0 at 30 write words", full_f10 === 1'b0);
+    @(negedge clk100); wr_en_f10 = 1'b1; din_f10 = 8'h2E;
+    @(negedge clk100); wr_en_f10 = 1'b0;
+    repeat (2) @(posedge clk100); #1.0;
+    chk("asym async: full=1 at 31 write words (DEPTH-1)", full_f10 === 1'b1);
+    chk_eq("asym async: count=31 write words", wcnt_f10, 31);
+
+    // 等 CDC 收敛后读 15 个完整读字, 小端拼包: 字 j = {byte 2j+1, byte 2j}
+    repeat (12) @(posedge clk57); #1.0;
+    chk_eq("asym async: rd_count=15 read words", rcnt_f10, 15);
+    for (int j = 0; j < 15; j++) begin
+      @(negedge clk57);
+      if (empty_f10 === 1'b1) break;
+      rd_en_f10 = 1'b1;
+      @(posedge clk57); #1.0;
+      exp16[7:0]  = 8'h10 + j + j;
+      exp16[15:8] = exp16[7:0] + 8'h01;
+      chk_eq($sformatf("asym async word[%0d] (LSB-first)", j), dout_f10, exp16);
+      chk($sformatf("asym async valid[%0d]", j), valid_f10 === 1'b1);
+    end
+    @(negedge clk57); rd_en_f10 = 1'b0;
+    repeat (4) @(posedge clk57); #1.0;
+    $display("    MEASURE asym async: after 15 words read, empty=%0b rd_count=%0d (31st byte dangling?)",
+             empty_f10, rcnt_f10);
+    chk("asym async: empty after all complete words", empty_f10 === 1'b1);
 
     //-----------------------------------------------------------
     $display("=== RESULT: %0d checks, %0d failures ===", checks, errors);

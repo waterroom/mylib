@@ -4,7 +4,8 @@
 #
 # 用法:
 #   bash sim/run_xsim.sh                 # 默认 Vivado 2022.1
-#   bash sim/run_xsim.sh 2018.3          # 指定 Vivado 版本
+#   bash sim/run_xsim.sh 2018.3          # 指定 Vivado 版本 (按 /c/Xilinx/Vivado/<ver> 推导)
+#   VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh   # 安装在别处时直接给根目录
 #   VIVADO_BIN=/path/to/bin bash sim/run_xsim.sh    # 直接指定 bin 目录
 #
 # 说明:

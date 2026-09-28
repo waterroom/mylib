@@ -76,6 +76,17 @@ module synth_top #(
   output logic        a_prog_full,
   output logic        a_prog_empty,
 
+  // 异步 FIFO 变宽 (8:1): 写 64 -> 读 16, 读侧深度 = 256*64/16 = 1024
+  input  logic [63:0] aw_din,
+  input  logic        aw_wr_en,
+  output logic        aw_full,
+  output logic [8:0]  aw_wr_count,
+  input  logic        aw_rd_en,
+  output logic [15:0] aw_dout,
+  output logic        aw_empty,
+  output logic        aw_valid,
+  output logic [10:0] aw_rd_count,
+
   // CDC / 复位桥
   output logic        bit_out,
   output logic [15:0] bus_out,
@@ -137,5 +148,15 @@ module synth_top #(
     .valid(a_valid),
     .underflow(a_underflow), .rd_count(a_rd_count),
     .rd_rst_busy(a_rd_rst_busy), .rst(rst_a));
+
+  // ---- 异步 FIFO: BRAM, 非对称位宽 8:1 (变宽只支持 block/uram) ----
+  xpm_async_fifo #(
+    .DW(64), .RD_DW(16), .DEPTH(256), .READ_MODE("std"), .MEM_TYPE("block")
+  ) u_afifo_asym (
+    .wr_clk(clk_a), .wr_en(aw_wr_en), .din(aw_din),
+    .full(aw_full), .wr_count(aw_wr_count),
+    .rd_clk(clk_b), .rd_en(aw_rd_en), .dout(aw_dout),
+    .empty(aw_empty), .valid(aw_valid), .rd_count(aw_rd_count),
+    .rst(rst_a));
 
 endmodule

@@ -26,7 +26,7 @@
 //   rst_busy       复位进行中 (xpm_fifo_sync 内部 wr_rst_busy == rd_rst_busy,
 //                  所以只引出这一个)
 //   rd_en          读使能 (empty 时读被忽略, 不报错)
-//   dout           读数据
+//   dout           读数据 [RD_DW-1:0], 读侧位宽 (默认 = 写侧 DW, 变宽见下)
 //   empty          空 (读不出)
 //   almost_empty   "接近空"标志
 //   prog_empty     可编程空水线: 剩余量 <= PROG_EMPTY_THRESH 时置起。
@@ -54,7 +54,16 @@
 //   PROG_EMPTY_THRESH 可编程空水线阈值, 0 = 不启用 (默认)。fwft 模式下 XPM
 //                内部把两个阈值都再减 2 才比较 (PF/PE_THRESH_ADJ), 实际水线
 //                = 参数值 - 2; std 模式无修正。
-//   CNT_W        count 位宽, 由 DEPTH 自动推导 (clog2(DEPTH)+1), 请勿覆盖
+//   RD_DW        读侧数据宽度, 默认 = DW (等宽)。变宽 (非对称位宽) 规则:
+//                宽度比限 1:1 / 2:1 / 4:1 / 8:1 及倒数 (2 的幂); 读侧深度
+//                = DEPTH*DW/RD_DW, XPM 硬性要求 >= 16; MEM_TYPE 只能 "block"
+//                或 "uram" ("auto" 只保证等宽行为; "distributed" 即 LUTRAM
+//                根本不支持变宽, XPM_MEMORY DRC 直接报错) -- 前两条 XPM 会
+//                报, auto/distributed 这条本 wrapper 预检直接拦下。拼包顺序: 先写入的字落在宽字低位 (小端),
+//                实测见自检 [10]。almost_full/prog_full/count 单位是写侧字,
+//                almost_empty/prog_empty 单位是读侧字。
+//   CNT_W        写侧 count 位宽, 由 DEPTH 自动推导 (clog2(DEPTH)+1), 请勿覆盖
+//   RCNT_W       读侧 rd_data_count 位宽 (clog2(读侧深度)+1), 请勿覆盖
 //
 // 复位与初值:
 //   rst 由 xpm_cdc_async_rst 整理过: 外部异步短脉冲也能捕获, 撤销与 clk 同步。
@@ -70,15 +79,17 @@
 //     [0]=overflow  [2]=wr_data_count  [3]=almost_full        写侧
 //     [8]=underflow [10]=rd_data_count [11]=almost_empty
 //     [12]=data_valid                                         读侧
-//   (位定义见 <Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv 第 208~218 行;
+//   (位定义见 <Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv 的 EN_OF..EN_DVLD
+//    localparam 区, 2022.1 在 208~218 行、2024.2 在 212~222 行, 行号随版本漂移;
 //    默认值 "0707" 并不包含 almost_full / almost_empty / data_valid,
 //    网上照抄的 "0707" 会让这些输出恒为 0。)
 //   PROG_FULL_THRESH / PROG_EMPTY_THRESH 任一非 0 时再打开对应特性位:
 //   [1]=prog_full, [9]=prog_empty, 即 PF 开 -> "1D0F", PE 开 -> "1F0D",
 //   双开 -> "1F0F"。
-//   注意 XPM 的一个暗坑 (xpm_fifo.sv 525~526 行): 特性位开了但阈值为 0 时,
-//   prog_empty 输出恒 1 (不是 0!)。本 wrapper 用 "阈值 0 = 位也不开" 的推导
-//   规则, 从结构上避开它。
+//   注意 XPM 的一个暗坑 (xpm_fifo.sv 里 prog_full/prog_empty 的输出门控
+//   assign, 2022.1 在 525~526 行、2024.2 在 538~539 行): 特性位开了但阈值为
+//   0 时, prog_empty 输出恒 1 (不是 0!)。本 wrapper 用 "阈值 0 = 位也不开"
+//   的推导规则, 从结构上避开它。
 //
 // 例化示例:
 //   xpm_sync_fifo #(.DW(32), .DEPTH(512), .READ_MODE("fwft")) u_fifo (
@@ -96,13 +107,15 @@
 
 module xpm_sync_fifo #(
   parameter int unsigned DW            = 8,
+  parameter int unsigned RD_DW         = DW,
   parameter int unsigned DEPTH         = 16,
   parameter string       READ_MODE     = "std",
   parameter int unsigned READ_LATENCY  = 1,
   parameter string       MEM_TYPE      = "auto",
   parameter int unsigned PROG_FULL_THRESH  = 0,
   parameter int unsigned PROG_EMPTY_THRESH = 0,
-  parameter int unsigned CNT_W         = $clog2(DEPTH) + 1
+  parameter int unsigned CNT_W         = $clog2(DEPTH) + 1,
+  parameter int unsigned RCNT_W        = $clog2(DEPTH * DW / RD_DW) + 1
 ) (
   input  logic             clk,
   input  logic             rst,
@@ -117,7 +130,7 @@ module xpm_sync_fifo #(
   output logic             rst_busy,
 
   input  logic             rd_en,
-  output logic [DW-1:0]    dout,
+  output logic [RD_DW-1:0] dout,
   output logic             empty,
   output logic             almost_empty,
   output logic             prog_empty,
@@ -139,6 +152,21 @@ module xpm_sync_fifo #(
     .dest_clk  (clk),
     .dest_arst (rst_sync)
   );
+
+  // 变宽合法性预检: "auto + 变宽" 在 XPM 里只有 "可能行为不正确" 的 NOTE,
+  // "distributed + 变宽" 会漏到 XPM_MEMORY 内部才报错, 这里提前拦下并说清楚。
+  localparam int unsigned RATIO = (DW >= RD_DW) ? DW / RD_DW : RD_DW / DW;
+  initial begin
+    if (RD_DW != DW) begin
+      if (MEM_TYPE != "block" && MEM_TYPE != "uram")
+        $error("xpm_sync_fifo: 变宽 (DW=%0d -> RD_DW=%0d) 时 MEM_TYPE 只能 \"block\"/\"uram\" (auto 不保证行为, distributed/LUTRAM 不支持变宽)", DW, RD_DW);
+      if (((DW % RD_DW) != 0 && (RD_DW % DW) != 0)
+          || (RATIO & (RATIO - 1)) != 0 || RATIO > 8)
+        $error("xpm_sync_fifo: DW=%0d / RD_DW=%0d 宽度比不合法 (限 1:1/2:1/4:1/8:1 及倒数)", DW, RD_DW);
+      if (DEPTH * DW / RD_DW < 16)
+        $error("xpm_sync_fifo: 变宽后读侧深度 DEPTH*DW/RD_DW = %0d < 16 (XPM DRC 硬性要求), 请加大 DEPTH", DEPTH * DW / RD_DW);
+    end
+  end
 
   // prog 水线特性位推导: 阈值 0 = 位也不开 (保持默认 "1D0D" 契约)。
   // 禁用时阈值按 0 透传是安全的: DRC 与水线比较逻辑都在 EN_PF/EN_PE 的
@@ -162,8 +190,8 @@ module xpm_sync_fifo #(
     .USE_ADV_FEATURES    (ADV_FEATURES),
     .READ_MODE           (READ_MODE),
     .FIFO_READ_LATENCY   (READ_LATENCY),
-    .READ_DATA_WIDTH     (DW),
-    .RD_DATA_COUNT_WIDTH (CNT_W),
+    .READ_DATA_WIDTH     (RD_DW),
+    .RD_DATA_COUNT_WIDTH (RCNT_W),
     .PROG_FULL_THRESH    (PROG_FULL_THRESH),
     .PROG_EMPTY_THRESH   (PROG_EMPTY_THRESH),
     .DOUT_RESET_VALUE    ("0"),

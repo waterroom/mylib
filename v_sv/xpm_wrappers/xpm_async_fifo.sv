@@ -17,7 +17,8 @@
 //   wr_count / rd_count  各自时钟域视角的占用量。异步模式下指针经 CDC 同步,
 //                        有 CDC_STAGES 拍的延迟: wr_count 偏大、rd_count 偏小,
 //                        只适合看趋势/调试, 流控请用 full/almost_full/empty/
-//                        almost_empty。
+//                        almost_empty。变宽时 wr_count 单位是写侧字,
+//                        rd_count 单位是读侧字。
 //   prog_full / prog_empty  可编程水线 (PROG_*_THRESH, 0 = 不启用恒 0),
 //                        语义见 xpm_sync_fifo 头部。异步模式水线比较用的对侧
 //                        指针带同步延迟, 标志的置起/撤销比同步模式多
@@ -41,7 +42,18 @@
 //   "复位释放与能不能马上写")。
 //
 // 参数:
-//   DW            数据宽度, 默认 8
+//   DW            写侧数据宽度, 默认 8
+//   RD_DW         读侧数据宽度, 默认 = DW (等宽)。变宽 (非对称位宽) 规则:
+//                 宽度比限 1:1 / 2:1 / 4:1 / 8:1 及倒数 (2 的幂); 读侧深度
+//                 = DEPTH*DW/RD_DW, XPM 硬性要求 >= 16; MEM_TYPE 只能
+//                 "block" 或 "uram" ("auto" 只保证等宽行为; "distributed"
+//                 即 LUTRAM 根本不支持变宽, XPM_MEMORY DRC 直接报错) --
+//                 前两条 XPM 会报, auto/distributed 这条本 wrapper 预检
+//                 直接拦下。
+//                 拼包顺序: 先写入的字落在宽字低位 (小端), 实测见自检 [10]。
+//                 变宽时 full/almost_full/prog_full/wr_count 单位是写侧字,
+//                 empty/almost_empty/prog_empty/rd_count 单位是读侧字;
+//                 有效深度 = DEPTH-1 个写侧字。
 //   DEPTH         深度, 2 的幂且 >= 16, 默认 16
 //   READ_MODE     "std" (默认) / "fwft"
 //   READ_LATENCY  仅 std 模式生效 (默认 1); fwft 内部固定 2 拍
@@ -84,6 +96,7 @@
 
 module xpm_async_fifo #(
   parameter int unsigned DW             = 8,
+  parameter int unsigned RD_DW          = DW,
   parameter int unsigned DEPTH          = 16,
   parameter string       READ_MODE      = "std",
   parameter int unsigned READ_LATENCY   = 1,
@@ -92,7 +105,8 @@ module xpm_async_fifo #(
   parameter int unsigned PROG_EMPTY_THRESH = 0,
   parameter int unsigned CDC_STAGES     = 2,
   parameter bit          RELATED_CLOCKS = 1'b0,
-  parameter int unsigned CNT_W          = $clog2(DEPTH) + 1
+  parameter int unsigned CNT_W          = $clog2(DEPTH) + 1,
+  parameter int unsigned RCNT_W         = $clog2(DEPTH * DW / RD_DW) + 1
 ) (
   // 写域
   input  logic             wr_clk,
@@ -108,13 +122,13 @@ module xpm_async_fifo #(
   // 读域
   input  logic             rd_clk,
   input  logic             rd_en,
-  output logic [DW-1:0]    dout,
+  output logic [RD_DW-1:0] dout,
   output logic             empty,
   output logic             almost_empty,
   output logic             prog_empty,
   output logic             valid,
   output logic             underflow,
-  output logic [CNT_W-1:0] rd_count,
+  output logic [RCNT_W-1:0] rd_count,
   output logic             rd_rst_busy,
 
   // 公共复位
@@ -135,6 +149,20 @@ module xpm_async_fifo #(
     .dest_clk  (wr_clk),
     .dest_arst (rst_sync)
   );
+
+  // 变宽合法性预检 (说明同 xpm_sync_fifo.sv)
+  localparam int unsigned RATIO = (DW >= RD_DW) ? DW / RD_DW : RD_DW / DW;
+  initial begin
+    if (RD_DW != DW) begin
+      if (MEM_TYPE != "block" && MEM_TYPE != "uram")
+        $error("xpm_async_fifo: 变宽 (DW=%0d -> RD_DW=%0d) 时 MEM_TYPE 只能 \"block\"/\"uram\" (auto 不保证行为, distributed/LUTRAM 不支持变宽)", DW, RD_DW);
+      if (((DW % RD_DW) != 0 && (RD_DW % DW) != 0)
+          || (RATIO & (RATIO - 1)) != 0 || RATIO > 8)
+        $error("xpm_async_fifo: DW=%0d / RD_DW=%0d 宽度比不合法 (限 1:1/2:1/4:1/8:1 及倒数)", DW, RD_DW);
+      if (DEPTH * DW / RD_DW < 16)
+        $error("xpm_async_fifo: 变宽后读侧深度 DEPTH*DW/RD_DW = %0d < 16 (XPM DRC 硬性要求), 请加大 DEPTH", DEPTH * DW / RD_DW);
+    end
+  end
 
   // prog 水线特性位推导 (规则与暗坑说明见 xpm_sync_fifo.sv):
   // 阈值 0 = 位也不开, 保持默认 "1D0D" 契约; 禁用时阈值透传 0 安全
@@ -157,8 +185,8 @@ module xpm_async_fifo #(
     .USE_ADV_FEATURES    (ADV_FEATURES),
     .READ_MODE           (READ_MODE),
     .FIFO_READ_LATENCY   (READ_LATENCY),
-    .READ_DATA_WIDTH     (DW),
-    .RD_DATA_COUNT_WIDTH (CNT_W),
+    .READ_DATA_WIDTH     (RD_DW),
+    .RD_DATA_COUNT_WIDTH (RCNT_W),
     .PROG_FULL_THRESH    (PROG_FULL_THRESH),
     .PROG_EMPTY_THRESH   (PROG_EMPTY_THRESH),
     .DOUT_RESET_VALUE    ("0"),

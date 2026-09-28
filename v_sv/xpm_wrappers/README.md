@@ -20,7 +20,7 @@ Vivado 版本只需要改这一层。这一层只覆盖日常最高频的几件�
 | `xpm_pulse_sync.sv` | `xpm_pulse_sync` | `xpm_cdc_pulse` | 单周期脉冲 / 事件跨时钟 |
 | `xpm_sync_fifo.sv` | `xpm_sync_fifo` | `xpm_fifo_sync` | 同步 FIFO |
 | `xpm_async_fifo.sv` | `xpm_async_fifo` | `xpm_fifo_async` | 异步 FIFO（跨时钟域数据通路） |
-| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（142 项检查） |
+| `sim/tb_xpm_wrappers.sv` | — | — | 行为自检 testbench（214 项检查） |
 | `sim/run_xsim.sh` | — | — | 一键跑 xsim 自检 |
 | `synth/synth_top.sv` `synth/synth_check.tcl` | — | — | 真实器件综合检查（默认 xczu48dr） |
 
@@ -65,6 +65,13 @@ xpm_pulse_sync #(.STAGES(2)) u_evt (
 xpm_sync_fifo #(.DW(32), .DEPTH(512), .PROG_FULL_THRESH(500)) u_fifo (
     .clk(clk100), .rst(rst100),
     .wr_en(wr_en), .din(din), .prog_full(stop_accept), ...);
+
+// 非对称位宽: 采集侧 64bit 写, 处理侧 16bit 读 (8:1, 读侧深度 256*64/16=1024)
+// 变宽时 MEM_TYPE 只能 "block"/"uram"; 先写的字落在宽字低位 (小端)
+xpm_async_fifo #(.DW(64), .RD_DW(16), .DEPTH(256), .MEM_TYPE("block")) u_wide (
+    .wr_clk(clk_a), .wr_en(wr_en), .din(din64), .full(full), .wr_count(wcnt),
+    .rd_clk(clk_b), .rd_en(rd_en), .dout(dout16), .empty(empty),
+    .valid(vld), .rd_count(rcnt), .rst(rst));
 ```
 
 ## 参数速查
@@ -74,8 +81,8 @@ xpm_sync_fifo #(.DW(32), .DEPTH(512), .PROG_FULL_THRESH(500)) u_fifo (
 | `xpm_cdc_sync` | `W`(1) `STAGES`(2) `REG_SRC`(1) `SIM_ASSERT_CHK`(0) | `W`: 1..1024；`STAGES`(=`DEST_SYNC_FF`): 2..10；`REG_SRC=1` 表示源域先打一拍（源信号是组合逻辑时必须为 1） |
 | `xpm_rst_sync` | `STAGES`(2) | 2..10 |
 | `xpm_pulse_sync` | `STAGES`(2) `REG_OUT`(0) `SIM_ASSERT_CHK`(0) | `STAGES`: 2..10；`REG_OUT=1` 让 `dest_pulse` 在目标域再打一拍（扇出大时改善时序） |
-| `xpm_sync_fifo` | `DW`(8) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `PROG_FULL_THRESH`(0) `PROG_EMPTY_THRESH`(0) `CNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；`MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+）；prog 阈值 0 = 不启用（恒 0），合法区间随配置变化（非法值 XPM DRC 报错并打印合法区间），fwft 实际水线 = 阈值−2 |
-| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（XPM 报错） |
+| `xpm_sync_fifo` | `DW`(8) `RD_DW`(=DW) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `PROG_FULL_THRESH`(0) `PROG_EMPTY_THRESH`(0) `CNT_W`(推导) `RCNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；等宽时 `MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+）；`RD_DW` 变宽时限 2 的幂比例且 `MEM_TYPE` 只能 "block"/"uram"（见"已验证的事实"12）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；prog 阈值 0 = 不启用（恒 0），fwft 实际水线 = 阈值−2 |
+| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（XPM 报错，变宽时也一样）；变宽规则同上 |
 
 `CNT_W` 是 `count` 的位宽，由 `DEPTH` 自动推导（`clog2(DEPTH)+1`），不要覆盖。
 
@@ -86,10 +93,10 @@ xpm_sync_fifo #(.DW(32), .DEPTH(512), .PROG_FULL_THRESH(500)) u_fifo (
 | 方向 | 写侧 | 读侧 |
 | --- | --- | --- |
 | in | `clk` `rst` `wr_en` `din[DW-1:0]` | `rd_en` |
-| out | `full` `almost_full` `prog_full` `count[CNT_W-1:0]` `overflow` `rst_busy` | `dout[DW-1:0]` `empty` `almost_empty` `prog_empty` `valid` `underflow` |
+| out | `full` `almost_full` `prog_full` `count[CNT_W-1:0]` `overflow` `rst_busy` | `dout[RD_DW-1:0]` `empty` `almost_empty` `prog_empty` `valid` `underflow` |
 
-异步 FIFO（`xpm_async_fifo`）：写侧 `wr_clk/wr_en/din/full/almost_full/prog_full/wr_count/overflow/wr_rst_busy`，
-读侧 `rd_clk/rd_en/dout/empty/almost_empty/prog_empty/valid/underflow/rd_count/rd_rst_busy`，
+异步 FIFO（`xpm_async_fifo`）：写侧 `wr_clk/wr_en/din[DW-1:0]/full/almost_full/prog_full/wr_count[CNT_W-1:0]/overflow/wr_rst_busy`，
+读侧 `rd_clk/rd_en/dout[RD_DW-1:0]/empty/almost_empty/prog_empty/valid/underflow/rd_count[RCNT_W-1:0]/rd_rst_busy`，
 外加公共 `rst`。
 
 * `valid`：std 模式为 `rd_en` 后 `READ_LATENCY` 拍的"数据有效"（实测与 `dout`
@@ -114,8 +121,8 @@ xpm_sync_fifo #(.DW(32), .DEPTH(512), .PROG_FULL_THRESH(500)) u_fifo (
 依据（XPM 源码 + 本目录实测）：
 
 * XPM 内部写门控和 `wr_rst_busy` 用的是**同一个表达式**（`xpm_fifo.sv` 里
-  `wr_rst_busy` 与 `ram_wr_en_i` 两条 assign；Vivado 2022.1 中在 465 / 479 行，
-  行号随版本漂移，以信号名为准）：
+  `wr_rst_busy` 与 `ram_wr_en_i` 两条 assign；2022.1 在 465/479 行、
+  2024.2 在 471/486 行，行号随版本漂移，以信号名为准）：
 
       assign wr_rst_busy = wrst_busy | rst_d1;
       assign ram_wr_en_i = wr_en & ~ram_full_i & ~(wrst_busy|rst_d1);
@@ -180,7 +187,9 @@ testbench 就是这么写的）。两种做法选一个即可。
 以下每一条都在本机 Vivado 2022.1 下用真实 XPM 源码核实并实测过
 （自检 testbench 的输出里带 `MEASURE` 行）：
 
-1. **`USE_ADV_FEATURES` 的位定义**（源码 `xpm_fifo.sv` 208~218 行、DRC 349~355 行）：
+1. **`USE_ADV_FEATURES` 的位定义**（源码 `xpm_fifo.sv` 的 `EN_OF..EN_DVLD`
+   localparam 区，2022.1 在 208~218 行、2024.2 在 212~222 行；保留位 DRC
+   在 2022.1 的 349~355 行、2024.2 的 353~358 行）：
    `[0]`overflow `[1]`prog_full `[2]`wr_data_count `[3]`almost_full `[4]`wr_ack
    `[8]`underflow `[9]`prog_empty `[10]`rd_data_count `[11]`almost_empty
    `[12]`data_valid；`[7:5]`、`[13]`、`[15:14]` 保留必须为 0。
@@ -226,7 +235,9 @@ testbench 就是这么写的）。两种做法选一个即可。
    **多 1 拍**（实测：第 8 个字写入后的下一拍才置起）。fwft 模式 XPM 内部把
    阈值减 2 再比（`PF/PE_THRESH_ADJ`）；异步模式水线比较用对侧同步指针，
    置起/撤销带 `CDC_STAGES` 拍级迟滞。**特性位开了但阈值为 0 时 `prog_empty`
-   输出恒 1**（不是 0，`xpm_fifo.sv` 525~526 行）——本层"阈值 0 = 位也不开"
+   输出恒 1**（不是 0；见 `xpm_fifo.sv` 里 `prog_full`/`prog_empty` 的输出
+   门控 assign，2022.1 在 525~526 行、2024.2 在 538~539 行）——本层"阈值 0 =
+   位也不开"
    的推导从结构上避开这个坑。合法区间（等宽、`DEPTH=16` 示例）：std 同步
    [3, 13]；fwft 同步 [5, 11]；std 异步 CDC=2 [5, 13]——下限随 `CDC_STAGES`
    抬高、fwft 两端各收 2、上限 ≈ `DEPTH-3`，非法值由 XPM DRC `$error` 并
@@ -237,13 +248,33 @@ testbench 就是这么写的）。两种做法选一个即可。
    `bit [127:0] vs string` 类型不匹配（xsim/Questa 仿真器不受影响，属于
    只综合器踩的坑）。本层用无类型 `localparam` + 字符串字面量三元表达式，
    字面量按打包位向量流动正好匹配——实测 xczu48dr 综合通过。
+12. **非对称位宽（`RD_DW != DW`，实测 sync 4:1 / async 1:2）**：
+   * 宽度比限 **2 的幂**：1:1、2:1、4:1、8:1 及倒数（XPM 模板注释口径）；
+     读侧深度 = `DEPTH×DW/RD_DW`，XPM DRC 硬性要求 **≥16**（写窄读宽时
+     `DEPTH` 要加大）。
+   * **distributed/LUTRAM 根本不支持变宽**——`XPM_MEMORY` DRC 直接报
+     "symmetric port widths are required for Distributed RAM"；`"auto"` 也
+     只保证等宽行为。所以变宽时 `MEM_TYPE` 只能显式 `"block"` / `"uram"`。
+     XPM 的 FIFO 文档只提了 auto 这条 NOTE，distributed 这条要漏到存储层
+     才报错——本层预检把两种情况都提前 `$error` 拦下。
+   * **拼包顺序是小端**：先写入的字落在宽字低位（实测 32→8 读出字节流
+     0,1,2,…；8→16 读出 `{b1,b0}`）。
+   * `full`/`almost_full`/`prog_full`/`wr_count` 的单位是**写侧字**，
+     `empty`/`almost_empty`/`prog_empty`/`rd_count` 的单位是**读侧字**。
+   * 有效深度按写侧字计仍是 `DEPTH-1`（实测 31 个写字节时 `full=1`），
+     但**读侧只能凑成完整读字**：写 31 字节（写窄读宽 1:2）只读得出 15 个
+     读字 = 30 字节，最后 1 个字节**悬挂不可见**（`empty=1`、`rd_count=0`，
+     实测见自检 [10] 的 MEASURE 行）。变宽时的安全容量按
+     **⌊(DEPTH−1)×DW/RD_DW⌋ 个读字**算，不要把写侧 (DEPTH−1) 撞满。
 
 ## 验证
 
 ```bash
-# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 142 项检查
+# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 214 项检查
+# 已回归版本: 2018.3 / 2022.1 / 2024.2 (三版 MEASURE 实测值一致)
 bash sim/run_xsim.sh            # 默认 Vivado 2022.1
-bash sim/run_xsim.sh 2018.3     # 换版本
+bash sim/run_xsim.sh 2018.3     # 换版本 (按 /c/Xilinx/Vivado/<ver> 推导)
+VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh   # 安装在别处时
 
 # 综合检查: 真实器件跑一遍综合 (默认 xczu48dr, 你的 RFSoC)
 vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e

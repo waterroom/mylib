@@ -82,7 +82,7 @@ xpm_async_fifo #(.DW(64), .RD_DW(16), .DEPTH(256), .MEM_TYPE("block")) u_wide (
 | `xpm_rst_sync` | `STAGES`(2) | 2..10 |
 | `xpm_pulse_sync` | `STAGES`(2) `REG_OUT`(0) `SIM_ASSERT_CHK`(0) | `STAGES`: 2..10；`REG_OUT=1` 让 `dest_pulse` 在目标域再打一拍（扇出大时改善时序） |
 | `xpm_sync_fifo` | `DW`(8) `RD_DW`(=DW) `DEPTH`(16) `READ_MODE`("std") `READ_LATENCY`(1) `MEM_TYPE`("auto") `PROG_FULL_THRESH`(0) `PROG_EMPTY_THRESH`(0) `CNT_W`(推导) `RCNT_W`(推导) | `DEPTH` 必须是 **2 的幂且 ≥16**（非法值 XPM 会直接 `$error`）；等宽时 `MEM_TYPE`: "auto"/"block"/"distributed"/"uram"（uram 仅 UltraScale+）；`RD_DW` 变宽时限 2 的幂比例且 `MEM_TYPE` 只能 "block"/"uram"（见"已验证的事实"12）；`READ_MODE`: "std"/"fwft"；`READ_LATENCY` 只在 std 模式生效（fwft 内部固定 2 拍）；prog 阈值 0 = 不启用（恒 0），fwft 实际水线 = 阈值−2 |
-| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（XPM 报错，变宽时也一样）；变宽规则同上 |
+| `xpm_async_fifo` | 同上 + `CDC_STAGES`(2) `RELATED_CLOCKS`(0) | `CDC_STAGES`(=`CDC_SYNC_STAGES`): 2..8，`DEPTH=16` 时最大 4，`RELATED_CLOCKS=1` 时必须为 2；prog 满水线下限比同步多抬 `CDC_STAGES`；**"uram" 不能用于异步 FIFO**（实测 XPM 静默失败不报错，见"已验证的事实"13，本层预检直接 `$error`）；变宽规则同上 |
 
 `CNT_W` 是 `count` 的位宽，由 `DEPTH` 自动推导（`clog2(DEPTH)+1`），不要覆盖。
 
@@ -266,6 +266,14 @@ testbench 就是这么写的）。两种做法选一个即可。
      读字 = 30 字节，最后 1 个字节**悬挂不可见**（`empty=1`、`rd_count=0`，
      实测见自检 [10] 的 MEASURE 行）。变宽时的安全容量按
      **⌊(DEPTH−1)×DW/RD_DW⌋ 个读字**算，不要把写侧 (DEPTH−1) 撞满。
+13. **`MEM_TYPE="uram"`（UltraRAM，仅 UltraScale+ 器件）**：**同步 FIFO 可以
+   用**——实测 512 深 std 模式读写功能完好（xczu48dr；URAM 单元 4K×72，
+   浅深度会浪费单元，建议 512 深起步）。**异步 FIFO 不能用，且 XPM 静默
+   失败**：`xpm_fifo_async` 的 URAM 分支整个不生成（源码
+   `gnuram_async_fifo` 的 generate 条件 `MEMORY_TYPE != 3`），无 DRC 无
+   报错，所有输出悬空（实测 `empty=z`、`rst_busy` 恒 x）——比报错危险得
+   多。本层异步 wrapper 预检直接 `$error` 拦截；同步 FIFO 若真要用 URAM，
+   上板前用 `synth/synth_check.tcl` 指一个带 URAM 的器件确认映射。
 
 ## 验证
 

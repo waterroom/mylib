@@ -58,7 +58,8 @@
 //   READ_MODE     "std" (默认) / "fwft"
 //   READ_LATENCY  仅 std 模式生效 (默认 1); fwft 内部固定 2 拍
 //   MEM_TYPE      FIFO_MEMORY_TYPE: "auto"/"block"/"distributed";
-//                 "uram" 只能用于同步 FIFO (XPM 会报 DRC 错误)
+//                 "uram" 不能用于异步 FIFO (实测: XPM 的 URAM 分支整个不
+//                 生成, 无 DRC 无报错, 输出静默悬空 -- 本层预检直接 $error)
 //   PROG_FULL_THRESH  可编程满水线阈值, 0 = 不启用 (默认)。异步模式的合法
 //                 区间下限比同步多抬 CDC_STAGES (等宽 + std + DEPTH=16 +
 //                 CDC=2 时为 [5, 13]), 非法值由 XPM DRC $error 并打印合法区间。
@@ -150,9 +151,14 @@ module xpm_async_fifo #(
     .dest_arst (rst_sync)
   );
 
-  // 变宽合法性预检 (说明同 xpm_sync_fifo.sv)
+  // 变宽合法性预检 (说明同 xpm_sync_fifo.sv) + uram 拦截:
+  // xpm_fifo_async 里 URAM 分支整个不生成 (源码 gnuram_async_fifo 的
+  // generate 条件是 MEMORY_TYPE != 3), 无 DRC 无报错, 输出静默悬空 --
+  // 实测 empty=z、rst_busy 恒 x, 比报错更危险, 这里显式拦下。
   localparam int unsigned RATIO = (DW >= RD_DW) ? DW / RD_DW : RD_DW / DW;
   initial begin
+    if (MEM_TYPE == "uram")
+      $error("xpm_async_fifo: MEM_TYPE=\"uram\" 不能用于异步 FIFO -- XPM 静默失败 (URAM 分支不生成, 输出悬空), 请改用 \"block\"/\"distributed\"/\"auto\"");
     if (RD_DW != DW) begin
       if (MEM_TYPE != "block" && MEM_TYPE != "uram")
         $error("xpm_async_fifo: 变宽 (DW=%0d -> RD_DW=%0d) 时 MEM_TYPE 只能 \"block\"/\"uram\" (auto 不保证行为, distributed/LUTRAM 不支持变宽)", DW, RD_DW);

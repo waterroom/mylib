@@ -365,7 +365,8 @@ vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
 
 这层是"日常够用"的薄封装，碰到下面这些情况请直接例化 XPM 原语
 （参数合法值仍以安装目录里的 XPM 源码为准：
-`<Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv`、`.../xpm_cdc/hdl/xpm_cdc.sv`）：
+`<Vivado>/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv`、`.../xpm_cdc/hdl/xpm_cdc.sv`、
+`.../xpm_memory/hdl/xpm_memory.sv`）：
 
 * FIFO 的 ECC（`ECC_MODE`）、`sleep` 低功耗、`wr_ack`、AXI-Stream 接口的
   `xpm_fifo_axis`；
@@ -373,10 +374,9 @@ vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
   （`MEMORY_INIT_*`）、`rstb` 输出复位——数据 RAM 场景用不到，直接例化
   XPM 原语即可；`xpm_memory_tdpram`（真双口）/ `spram`（单口）/
   `dprom`（ROM）本层未包，按 `xpm_sdpram.sv` 同样思路加即可；
-* 握手类 CDC（`xpm_cdc_handshake`）、格雷码（`xpm_cdc_gray`）、
-  低延迟握手（`xpm_cdc_low_latency_handshake`）；
-* 存储器（`xpm_memory_sdpram` / `tdpram` / `spram`）——本层还没包，按同样
-  思路加一个 `xpm_sdpram.sv` 即可（这是下一步计划）。
+* 其余 CDC 原语：格雷码（`xpm_cdc_gray`）、低延迟握手
+  （`xpm_cdc_low_latency_handshake`）等（`xpm_cdc_handshake` 已由
+  `xpm_handshake` 封装）。
 
 另外记住：**XPM 只支持 Xilinx/AMD 器件**，而且要 `compile_simlib` 或本目录
 `sim/run_xsim.sh` 那样的方式把 XPM 源码喂给第三方仿真器；跨厂商复用代码时

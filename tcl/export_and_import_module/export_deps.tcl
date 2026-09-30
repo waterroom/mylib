@@ -25,7 +25,7 @@
 #
 # Usage (batch, run from repo root; -log/-journal must precede -tclargs;
 # in Git Bash use forward slashes for every path):
-#   vivado -mode batch -source tools/export_deps.tcl \
+#   vivado -mode batch -source tcl/export_and_import_module/export_deps.tcl \
 #       -tclargs <proj.xpr|-> <file-or-module> [outdir] [-xdc]
 #   '-' as project means: use the currently open project.
 #   -xdc additionally copies all enabled XDC files into <out>/xdc.

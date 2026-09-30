@@ -2,7 +2,7 @@
 # synth_check.tcl -- 用 Vivado 综合器验证 xpm_wrappers (仿真通过 != 综合通过)
 #
 # XPM 在综合时走的是另一套参数检查 (合法值、器件代际支持、原语映射), 所以除了
-# 行为仿真, 再用真实器件把 5 个 wrapper 综合一遍。默认器件用 xczu48dr
+# 行为仿真, 再用真实器件把全部 8 个 wrapper 按典型配置综合一遍。默认器件用 xczu48dr
 # (RFSoC ZU48, UltraScale+), 也可以用 -tclargs 换成别的已安装器件。
 #
 # 用法 (Git Bash, 路径用正斜杠):

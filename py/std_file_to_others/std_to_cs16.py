@@ -34,13 +34,13 @@ STD 头格式 (50 字节):
 
 用法:
   # 常规: 自动判类型/实复/dechirp
-  python tools/std_to_cs16.py data/xxx_FS27MHz_csSwith.STD -o data/xxx_27m.cs16
+  python py/std_file_to_others/std_to_cs16.py data/xxx_FS27MHz_csSwith.STD -o data/xxx_27m.cs16
   # 只取前 20M 样点 (控制内存/时长)
-  python tools/std_to_cs16.py in.STD --nsamp 20000000
+  python py/std_file_to_others/std_to_cs16.py in.STD --nsamp 20000000
   # 不做频偏补偿 (信号已在零中频)
-  python tools/std_to_cs16.py in.STD --no-dechirp
+  python py/std_file_to_others/std_to_cs16.py in.STD --no-dechirp
   # 手动指定频偏
-  python tools/std_to_cs16.py in.STD --dechirp-freq 3.68e6
+  python py/std_file_to_others/std_to_cs16.py in.STD --dechirp-freq 3.68e6
 """
 import argparse
 import os

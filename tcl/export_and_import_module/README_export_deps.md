@@ -7,21 +7,23 @@
 - 源文件（.v/.sv/.vhd/头文件）→ **复制**进目标工程（`<工程目录>/imported_sources/`）
 - Xilinx IP 核 → **按参数重建**（每个 IP 一份 `write_ip_tcl` 脚本，
   `create_ip` + 全部 CONFIG 参数，不复制 .xci/.gen 输出产品）
-- IP 引用的外部数据文件（.coe 等）由 2022.1 的 write_ip_tcl 自动内嵌进脚本，
-  天然自包含
+- IP 引用的外部数据文件（.coe 等）：2022.1 的 write_ip_tcl 会把系数直接
+  内嵌进重建脚本（天然自包含）；未内嵌的版本由导出脚本复制到
+  `ip/<IP名>/files/` 并把脚本中的引用改指到本地副本
 
 ## 导出（在源工程的 Vivado 里）
 
 通用形式：
 
 ```
-vivado -mode batch -source tools/export_deps.tcl [-log xx.log] [-journal xx.jou] -tclargs <工程.xpr|-> <文件或模块名> [输出目录] [-xdc]
+vivado -mode batch -source tcl/export_and_import_module/export_deps.tcl [-log xx.log] [-journal xx.jou] -tclargs <工程.xpr|-> <文件或模块名> [输出目录] [-xdc]
 ```
 
 - **`-tclargs` 之后的所有内容都会原样传给脚本**，所以 `-log` / `-journal`
   必须放在 `-tclargs` 之前；不加的话 `vivado.log` / `vivado.jou` 会生成在
   当前目录。
-- `-source tools/export_deps.tcl` 是相对路径时，先 `cd` 到仓库根目录。
+- `-source tcl/export_and_import_module/export_deps.tcl` 是相对路径时，先
+  `cd` 到本仓库（mylib）根目录。
 - 工程参数写 `-` 表示用当前已打开的工程。
 - 文件参数支持：绝对路径、子路径（如 `sources_1/new/ZU48_TOP.v`）、
   工程内唯一的文件名（如 `da_data_gen.sv`）、或直接写模块名/IP名。
@@ -31,14 +33,14 @@ vivado -mode batch -source tools/export_deps.tcl [-log xx.log] [-journal xx.jou]
 
 ```bat
 cd /d D:\prj\f24013_7
-C:\Xilinx\Vivado\2022.1\bin\vivado.bat -mode batch -source tools\export_deps.tcl -log exp.log -journal exp.jou -tclargs ZU48_F1_V100_4p8G_sync_260910\ZU48_F1_V100.xpr da_data_gen.sv D:\exp
+C:\Xilinx\Vivado\2022.1\bin\vivado.bat -mode batch -source D:\mylib\tcl\export_and_import_module\export_deps.tcl -log exp.log -journal exp.jou -tclargs ZU48_F1_V100_4p8G_sync_260910\ZU48_F1_V100.xpr da_data_gen.sv D:\exp
 ```
 
 ### 实例（Git Bash，必须全部用 `/`，否则反斜杠会被 bash 吃掉）
 
 ```bash
 cd /d/prj/f24013_7
-/c/Xilinx/Vivado/2022.1/bin/vivado.bat -mode batch -source tools/export_deps.tcl \
+/c/Xilinx/Vivado/2022.1/bin/vivado.bat -mode batch -source /d/mylib/tcl/export_and_import_module/export_deps.tcl \
   -log exp.log -journal exp.jou \
   -tclargs ZU48_F1_V100_4p8G_sync_260910/ZU48_F1_V100.xpr da_data_gen.sv D:/exp
 ```
@@ -46,7 +48,7 @@ cd /d/prj/f24013_7
 ### 实例（Vivado GUI 的 Tcl 控制台）
 
 ```tcl
-source D:/prj/f24013_7/tools/export_deps.tcl
+source D:/mylib/tcl/export_and_import_module/export_deps.tcl
 export_deps::run - da_data_gen.sv D:/exp
 ```
 

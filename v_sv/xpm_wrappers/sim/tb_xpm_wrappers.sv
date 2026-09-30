@@ -1113,7 +1113,11 @@ module tb_xpm_wrappers;
     @(posedge clk57); #1.0;
     chk("sync_rst asserted at 2nd dest edge", dest_sr_a === 1'b1);
 
-    // 同步释放: src 拉低后第 2 个 dest 沿释放
+    // 同步释放: src 拉低后第 2 个 dest 沿释放。
+    // 拉高需保持满 3 个 dest 周期再撤低: SIM_ASSERT_CHK=1 镜像实例的 S-1
+    // 断言 (xpm_cdc.sv min_sampling) 要求"变化被采到后再稳定 2 个采样沿",
+    // negedge 变更纪律下只保持 2 个周期会被判不稳定而误触发
+    @(posedge clk57);
     @(negedge clk57); rst_sr_a = 1'b0;
     @(posedge clk57); #1.0;
     chk("sync_rst release is synchronous (still high at 1st edge)",

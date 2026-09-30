@@ -344,7 +344,7 @@ testbench 就是这么写的）。两种做法选一个即可。
 ## 验证
 
 ```bash
-# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 279 项检查
+# 行为自检: 用 Vivado 自带仿真器 (xvlog/xelab/xsim), 290 项检查
 # 已回归版本: 2018.3 / 2022.1 / 2024.2 (三版 MEASURE 实测值一致)
 # bash sim/run_xsim_all.sh    # 三版本一键回归 (版本路径在脚本内维护)
 bash sim/run_xsim.sh            # 默认 Vivado 2022.1

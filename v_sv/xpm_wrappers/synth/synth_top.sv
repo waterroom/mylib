@@ -1,12 +1,14 @@
 //=============================================================================
 // synth_top.sv -- 综合验证用顶层 (不参与设计, 只给 synth_check.tcl 用)
 //
-// 把 5 个 wrapper 按典型配置各例化一遍, 覆盖:
+// 把本库主要 wrapper 按典型配置各例化一遍, 覆盖:
 //   - CDC: 单 bit / 多 bit 电平同步、脉冲同步、复位桥
-//   - 同步 FIFO: BRAM ("block") + std、分布式 RAM ("distributed") + fwft
-//   - 异步 FIFO: BRAM + 双时钟
+//   - 同步 FIFO: BRAM ("block") + std、分布式 RAM ("distributed") + fwft、URAM
+//   - 异步 FIFO: BRAM + 双时钟、非对称位宽 (8:1)
 //   - prog 可编程水线: 两个 FIFO 各开 PROG_FULL/EMPTY_THRESH (含 fwft 的
 //     THRESH_ADJ 路径), 验证参数与端口贯通
+//   - 简单双口 RAM: 变宽 4:1 / 独立时钟 / common_clock
+//   - 握手跨时钟、同步复位同步器
 // 端口全部引到顶层, 综合时不会被裁掉。
 //=============================================================================
 

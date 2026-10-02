@@ -1,5 +1,5 @@
 //=============================================================================
-// dsp_cic_decim.sv -- CIC 抽取滤波器 (参数化 N/R, Hogenauer 结构)
+// dsp_cic_decim.sv -- CIC 抽取滤波器 (参数化 N/R, Hogenauer 结构, 固定抽取比)
 //
 // 结构: N 级积分器 (输入率, in_valid 门控) -> R 倍抽取 -> N 级梳状差分
 //       (输出率) -> 输出舍入。M (差分延迟) 固定 1。
@@ -8,8 +8,9 @@
 //   - DC 增益恰为 1 (R 为 2 的幂时增益 2^G, G = N*log2(R), 输出右移 G 位
 //     正好抵消): 直流输入 A, 稳态输出 = A, 免标定;
 //   - 零点在 f = k*f_s/R (k = 1..R-1): 抽取混叠落在零点上, 免抗混叠;
-//   - 位增长 G bit: 内部宽度 WI = B_IN + N*log2(R), 无损无溢出;
-//   - 免乘法 (纯加法/移位), 综合不占 DSP48。
+//   - 位增长 G bit: 内部宽度 WI = B_IN + G, 无损无溢出;
+//   - 免乘法 (纯加法/移位), 综合不占 DSP48;
+//   - 瞬态: 复位/输入变化后前 N 个输出样是窗填充 (三阶差分), 结构性的。
 //
 // 端口:
 //   clk       时钟
@@ -28,12 +29,18 @@
 //          B_OUT = B_IN 时 DC 增益 1; > B_IN 保留 G 位内的小数信息
 //   ROUND  1 (默认) = 输出 round half up; 0 = 截断 (向 -inf, 有负偏)
 //
-// 时序: 延迟 = R + N + 2 拍 (R 拍聚满第一个窗 + 积分链可见 + comb N 级 +
-//       输出寄存)。out_valid 与 out_data 同拍。
+// 时序: 延迟 = N + 2 拍 (采样寄存 + comb N 级 + 输出寄存)。
+//       out_valid 与 out_data 同拍。
 //
-// 参考: ADI hdl library/util_cic (cic_int/cic_comb 的分段共享加法器结构
-//       为多通道复用特化, 本模块用全速标准结构换清晰性); Hogenauer,
-//       "Economical Class of Digital Filters for Decimation and Interpolation"。
+// 已知限制: 抽取比 R 编译期固化, 不支持运行时切换。运行时变 R 的两条
+//       可行路径: (a) 多实例 (不同 R) + 输出 mux; (b) ADI 式把各级采样
+//       使能 (ce) 外置由系统采样时序生成 (library/util_cic 的做法) --
+//       注意使能必须与数据流同源对齐, 独立模块内部用多级 toggle 门控
+//       会产生级间锁相死锁 (实测), 不要走这条路。
+//
+// 参考: ADI hdl library/util_cic (cic_int 的分段共享加法器为多通道复用
+//       特化); Hogenauer, "Economical Class of Digital Filters for
+//       Decimation and Interpolation" (1981)。
 //=============================================================================
 
 `timescale 1ns / 1ps
@@ -99,13 +106,15 @@ module dsp_cic_decim #(
   logic signed [WI-1:0] prv [0:N-1];        // 各级上一输出样的值
   logic                 vv  [0:N+1];
 
+  // 采样寄存必须条件锁存: 若每拍无条件跟随 acc, comb 窗会被采样后的
+  // acc 继续积累污染 (输出对应非整数个样, 对拍实测, 见事实 #7)
   always_ff @(posedge clk) begin
     if (rst) begin
       c[0]  <= '0;
       vv[0] <= 1'b0;
     end else if (sample) begin
-      c[0]  <= acc[N-1];      // 采样拍锁存积分链末端 (否则 c[0] 每拍跟随,
-      vv[0] <= 1'b1;          //  comb 窗被采样后的 acc 污染, 实测窗非整)
+      c[0]  <= acc[N-1];
+      vv[0] <= 1'b1;
     end else begin
       vv[0] <= 1'b0;
     end

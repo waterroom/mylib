@@ -21,9 +21,10 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | 文件 | 模块 | 用途 | 状态 |
 | --- | --- | --- | --- |
 | `dsp_cordic.sv` | `dsp_cordic` | CORDIC 核:旋转(sin/cos)+ 矢量(幅/相)双模式 | v1.0,312 项对拍 |
-| `sim/tb_dsp_cordic.sv` | — | real-math 对拍自检 | 312 项检查 |
-| `sim/run_xsim.sh` | — | 单版本跑自检(纯 RTL,无需 XPM 源) | |
-| `synth/synth_top.sv` `synth/synth_check.tcl` | — | 综合冒烟(查 DSP48 映射与零警告) | |
+| `dsp_cic_decim.sv` | `dsp_cic_decim` | CIC 抽取滤波器(参数化 N/R,DC 增益 1,免乘法) | v1.0,67 项位精确对拍 |
+| `sim/tb_dsp_cordic.sv` `sim/tb_dsp_cic_decim.sv` | — | real-math / longint 位精确对拍自检 | 合计 379 项检查 |
+| `sim/run_xsim.sh` | — | 单版本跑自检(纯 RTL,无需 XPM 源;两个 top 依次跑) | |
+| `synth/synth_top.sv` `synth/synth_check.tcl` | — | 综合冒烟(查零警告与资源) | |
 
 ## dsp_cordic 速查
 
@@ -37,7 +38,17 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | 精度 | 实测(D=16, S=16, P=16):sin/cos ±3 LSB、mag ±1 LSB、phase ±1 LSB;rotate 满幅比理想 FS 低 ~3.3 LSB(x0 防饱和余量,见事实 #6) |
 | 资源 | rotate:D 位直通 + 预旋转,无饱和器;vector:D+4 位 + 归一化移位器;1/K 补偿为 CSD 移位加。xczu48dr 两模式合计 2414 LUT / 1761 FF / **0 DSP48** |
 
-**已验证的事实(dsp 家族 #1~#5,2022.1 实测,三版本回归一致):**
+### dsp_cic_decim 速查
+
+| 项 | 说明 |
+| --- | --- |
+| 接口 | `rst`(高有效同步清零,可接 0)+ `in_valid/in_data[B_IN]` → `out_valid/out_data[B_OUT]`;out_valid 每 R 个输入样一个 |
+| 参数 | `N` 级数 1..8(默认 3)/ `R` 抽取比 **2 的幂** 2..2^16(默认 64)/ `B_IN` 4..32 / `B_OUT` ≤ B_IN+N·log2(R) / `ROUND`(1 = round half up) |
+| 性质 | DC 增益恰 1(稳态 out == in,免标定);零点在 f = k·f_s/R;位增长 G = N·log2(R),内部宽 B_IN+G 无损;免乘法 |
+| 瞬态 | 前 N 个输出样(三阶差分窗填充,实测 N=3 时第 3 个输出起稳态) |
+| 资源 | 纯加法/移位,0 DSP48;xczu48dr 合计(含两个 CORDIC)2627 LUT / 2111 FF |
+
+**已验证的事实(dsp 家族 #1~#7,2022.1 实测,三版本回归一致):**
 
 1. **纯截断右移的偏移不可接受**:每级 `>>>` 向下取整,16 级累积成
    sin/cos **±7 LSB** 的输出误差(实测);每级加 round-half-up 后降到
@@ -63,6 +74,15 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
    * **1/K 补偿用 CSD 移位加**:1/K = 2^-1+2^-3−2^-6−2^-9−2^-12+
      2^-14+2^-16(7 项,逼近误差 0.036 LSB),7 个加法器替代 19×19
      常数乘的 9 个 DSP48。
+7. **CIC 采样寄存器必须条件锁存**(对拍实测的真 bug):`c[0] <= acc[N-1]`
+   若写成每拍无条件跟随(而非仅采样拍锁存),comb 窗会被采样后的
+   acc 继续积累污染,输出对应"非整数个样"的窗(144 对 151,手算
+   无法解释的量级)——位精确对拍一跑即现。
+8. **CIC 的瞬态与相位**:非阻塞级联积分器第 N 级滞后 2 拍(第 k 样
+   的完整贡献在 k+2 拍才进 acc[N-1]),叠加 comb 链填充,DC 输入下
+   前 N−1 个输出样是瞬态(实测 N=3:第 3 个输出起稳态 == 输入);
+   TB 参考必须镜像 RTL 的非阻塞语义(阻塞级联会与 RTL 差 N 拍,
+   输出窗错位)。
 
 参考:ADI hdl `library/common/ad_dds_cordic_pipe.v`(单级旋转结构参照,
 本模块为独立自写实现);Ray Andraka, "A Survey of CORDIC Algorithms for

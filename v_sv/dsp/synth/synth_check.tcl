@@ -22,6 +22,7 @@ puts "\[dsp_synth\] part = $part"
 
 read_verilog -sv [list \
     "$here/../dsp_cordic.sv" \
+    "$here/../dsp_cic_decim.sv" \
     "$here/synth_top.sv" ]
 
 synth_design -top dsp_synth_top -part $part -mode out_of_context

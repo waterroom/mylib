@@ -23,7 +23,9 @@ module dsp_synth_top #(
   output logic [D-1:0] cos_o,
   output logic        ov_vec,
   output logic [D-1:0] mag_o,
-  output logic [P-1:0] ph_o
+  output logic [P-1:0] ph_o,
+  output logic        cic_vld,
+  output logic [D-1:0] cic_out
 );
 
   dsp_cordic #(.MODE("rotate"), .P_DW(P), .D_DW(D), .STAGES(S)) u_rot (
@@ -38,5 +40,9 @@ module dsp_synth_top #(
     .in_x(x), .in_y(y),
     .out_valid(ov_vec), .out_sin(), .out_cos(),
     .out_mag(mag_o), .out_phase(ph_o));
+
+  dsp_cic_decim #(.N(3), .R(64), .B_IN(D), .B_OUT(D), .ROUND(1'b1)) u_cic (
+    .clk(clk), .rst(1'b0), .in_valid(in_valid), .in_data(sin_o[D-1:0]),
+    .out_valid(cic_vld), .out_data(cic_out));
 
 endmodule

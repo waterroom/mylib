@@ -30,21 +30,21 @@ rm -rf xsim.dir xvlog.log xelab.log xsim.log xsim_out.txt
 
 echo "== xvlog (编译 dsp 源码 / tb) =="
 "${XV}/xvlog" -sv \
-    "${ROOT}/dsp_cordic.sv" \
-    "${HERE}/tb_dsp_cordic.sv"
+    "${ROOT}/dsp_cordic.sv"     "${ROOT}/dsp_cic_decim.sv" \
+    "${HERE}/tb_dsp_cordic.sv"  "${HERE}/tb_dsp_cic_decim.sv"
 
 echo "== xelab =="
-"${XV}/xelab" tb_dsp_cordic -s tb_dsp --debug typical
+"${XV}/xelab" tb_dsp_cordic     -s tb_dsp_cordic     --debug typical
+"${XV}/xelab" tb_dsp_cic_decim  -s tb_dsp_cic_decim  --debug typical
 
 echo "== xsim =="
-"${XV}/xsim" tb_dsp -runall | tee xsim_out.txt
+rm -f xsim_out.txt
+"${XV}/xsim" tb_dsp_cordic    -runall | tee    xsim_out.txt
+"${XV}/xsim" tb_dsp_cic_decim -runall | tee -a xsim_out.txt
 
-if grep -q "=== ALL PASS ===" xsim_out.txt; then
-    if grep -qE "^Error:" xsim_out.txt; then
-        echo "== 仿真输出含 Error, 完整输出见 ${WORK}/xsim_out.txt ==" >&2
-        exit 1
-    fi
-    echo "== 自检通过 =="
+N_PASS=$(grep -c "=== ALL PASS ===" xsim_out.txt || true)
+if [ "${N_PASS}" -ge 2 ] && ! grep -qE "^Error:" xsim_out.txt; then
+    echo "== 自检通过 (2/2 top) =="
 else
     echo "== 自检失败, 完整输出见 ${WORK}/xsim_out.txt ==" >&2
     exit 1

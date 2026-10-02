@@ -55,9 +55,12 @@ python std_to_wv.py input.std -o output.wv
 （幅/相）双模式，STAGES/P_DW/D_DW 参数化，内置象限预旋转、CSD 移位加
 增益补偿、输入归一化；实测精度 sin/cos ±3 LSB、幅 ±1 LSB、相位 ±1 LSB
 （D=16, S=16），**零 DSP48**（xczu48dr 两模式合计 2414 LUT / 1761 FF）。开发过程中把整数 CORDIC 的三个实现坑（截断偏移、atan 表量化、
-小信号归一化）全部实测并写成事实清单。
+小信号归一化）全部实测并写成事实清单。第二个模块 `dsp_cic_decim`：
+参数化 CIC 抽取滤波器（N/R/B_IN/B_OUT/ROUND），DC 增益恰 1、零点在
+k·f_s/R、免乘法；开发中对拍揪出采样寄存器未条件锁存的真 bug。两模块
+合计 379 项对拍检查，三版本回归全过。
 
-接口、参数、事实清单与路线图（nco / cic / ddc_ch / 测量链）见
+接口、参数、事实清单与路线图（nco / ddc_ch / 测量链）见
 [`v_sv/dsp/README.md`](v_sv/dsp/README.md)。
 
 ## tcl/

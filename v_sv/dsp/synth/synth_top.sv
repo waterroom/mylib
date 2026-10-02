@@ -38,7 +38,16 @@ module dsp_synth_top #(
   output logic        fft_vld,
   output logic        fft_frame,
   output logic [22:0] fft_i,
-  output logic [22:0] fft_q
+  output logic [22:0] fft_q,
+
+  // 信道化器: IQ 入 -> 64 复数信道出 (完整链路含内部 FIFO)
+  input  logic        ch_valid,
+  input  logic [15:0] ch_i,
+  input  logic [15:0] ch_q,
+  output logic        ch_vld_o,
+  output logic        ch_frame_o,
+  output logic [22:0] ch_bin_i,
+  output logic [22:0] ch_bin_q
 );
 
   dsp_cordic #(.MODE("rotate"), .P_DW(P), .D_DW(D), .STAGES(S)) u_rot (
@@ -70,5 +79,13 @@ module dsp_synth_top #(
     .in_i(pfir_dout), .in_q(16'sd0),
     .out_valid(fft_vld), .out_frame(fft_frame),
     .out_i(fft_i), .out_q(fft_q));
+
+  dsp_chan #(.N(64), .K(8), .B_IN(16), .B_CO(16), .B_OUT(16), .WT(16),
+             .COEF_FILE("sim/coef_pfir_64x8.mem"),
+             .TW_FILE("sim/coef_fft_64_w16.mem")) u_chan (
+    .clk(clk), .rst(rst_a),
+    .in_valid(ch_valid), .in_i(ch_i), .in_q(ch_q),
+    .out_valid(ch_vld_o), .out_frame(ch_frame_o),
+    .out_i(ch_bin_i), .out_q(ch_bin_q));
 
 endmodule

@@ -60,12 +60,12 @@ python std_to_wv.py input.std -o output.wv
 k·f_s/R、免乘法；开发中对拍揪出采样寄存器未条件锁存的真 bug。两模块
 合计 379 项对拍检查，三版本回归全过。
 
-第三个模块 `dsp_pfir`:多相滤波器组 FIR(PFB 频域信道化的滤波级,
-N 信道 × K 抽头,时分复用 1 个乘法器)。第四个模块 `dsp_fft`:N 点复
-FFT(迭代式 radix-2,in-place BRAM,与 pfir 帧输出直接串联,644 项位
-精确对拍,量化模型经 numpy 交叉验证)。四个模块合计 1924 项检查。
-开发中对拍先后揪出 signedness 陷阱(含 `'0` 的三元、饱和比较)、
-TB 零延迟竞争等 5 个隐蔽 bug。
+第三/四/五个模块完成**频域信道化接收链**:`dsp_pfir`(多相滤波级)→
+`dsp_fft`(N 点复 FFT)→ `dsp_chan`(装配:IQ 入 → N 个复数信道出,
+含 FIFO 解耦)。五个模块合计 1931 项检查(位精确对拍 + 系统级多音注入),
+`dsp_chan` 实测信道增益 1.000、**邻道隔离 −58.8 dB**(N=64/K=8),
+bin k = 信道 k。开发中对拍先后揪出 signedness 陷阱(含 `'0` 的三元、
+饱和比较)、TB 零延迟竞争、I/Q 字序镜像、吞吐失配等 8 个隐蔽 bug。
 
 接口、参数、事实清单与路线图(PFB 信道化 / 测量链)见
 [`v_sv/dsp/README.md`](v_sv/dsp/README.md)。

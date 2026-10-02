@@ -25,8 +25,12 @@ read_verilog -sv [list \
     "$here/../dsp_cic_decim.sv" \
     "$here/../dsp_pfir.sv" \
     "$here/../dsp_fft.sv" \
+    "$here/../dsp_chan.sv" \
     "$here/../../xpm_wrappers/xpm_sdpram.sv" \
+    "$here/../../xpm_wrappers/xpm_sync_fifo.sv" \
     "$::env(XILINX_VIVADO)/data/ip/xpm/xpm_memory/hdl/xpm_memory.sv" \
+    "$::env(XILINX_VIVADO)/data/ip/xpm/xpm_fifo/hdl/xpm_fifo.sv" \
+    "$::env(XILINX_VIVADO)/data/ip/xpm/xpm_cdc/hdl/xpm_cdc.sv" \
     "$here/synth_top.sv" ]
 
 synth_design -top dsp_synth_top -part $part -mode out_of_context

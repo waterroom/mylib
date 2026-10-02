@@ -24,7 +24,8 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | `dsp_cic_decim.sv` | `dsp_cic_decim` | CIC 抽取滤波器(参数化 N/R,DC 增益 1,免乘法) | v1.0,67 项位精确对拍 |
 | `dsp_pfir.sv` | `dsp_pfir` | 多相滤波器组 FIR(PFB 信道化滤波级,时分复用 MAC) | v1.0,901 项位精确对拍 |
 | `dsp_fft.sv` | `dsp_fft` | N 点复 FFT(迭代式 radix-2, in-place BRAM, 定长突发) | v1.0,644 项位精确对拍 |
-| `sim/tb_dsp_*.sv` (4 个) | — | real-math / longint 位精确对拍自检 | 合计 1924 项检查 |
+| `dsp_chan.sv` | `dsp_chan` | **多相信道化器**(IQ 入 → N 复数信道出, pfir×2+FIFO+fft 装配) | v1.0,多音系统级 7 项 |
+| `sim/tb_dsp_*.sv` (5 个) | — | 位精确对拍 + 系统级多音注入自检 | 合计 1931 项检查 |
 | `sim/gen_coef_pfir.py` `sim/coef_pfir_64x8.mem` | — | PFB 原型系数生成脚本与系数文件 | |
 | `sim/gen_coef_fft.py` `sim/coef_fft_64_w16.mem` | — | FFT twiddle 生成脚本(含 numpy 交叉验证)与系数文件 | |
 | `sim/run_xsim.sh` | — | 单版本跑自检(纯 RTL,无需 XPM 源;两个 top 依次跑) | |
@@ -75,7 +76,17 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | 精度 | 量化模型经 numpy 交叉验证 max_err 0.002 LSB(输入标度);RTL 与模型逐位精确(冲激/直流/单音/随机 5 用例) |
 | 资源 | 四模块合计(xczu48dr, 含 pfir→fft 链路):DSP48=45 / 3478 LUT / 2403 FF |
 
-**已验证的事实(dsp 家族 #1~#13,2022.1 实测,三版本回归一致):**
+### dsp_chan 速查
+
+| 项 | 说明 |
+| --- | --- |
+| 接口 | `in_valid/in_i/in_q` IQ 流(帧节奏约束见下)→ `out_valid/out_frame/out_i/out_q[B_BIN]`(每信道一个,bin 0..N-1 顺序成帧) |
+| 结构 | `dsp_pfir`×2(I/Q 共享系数, 线性分离性)+ 同步 FIFO(解耦 pfir 脉冲与 fft 握手)+ `dsp_fft` |
+| 映射 | **bin k = 信道 k**(输入 e^{+j2πkn/N} 落 bin k;bin0=直流, 1..N/2-1 正频, N/2..N-1 负频) |
+| 增益/隔离 | 信道中心音 \|bin\| = 1.000·A(±0.01%);邻道泄漏实测 **−58.8 dB**(N=64/K=8) |
+| 帧节奏 | **帧周期必须 ≥ FFT 帧时间**(N + 6·(N/2)·log2(N) + N+1 拍, N=64 约 1281 拍)——pfir 输出经 FIFO 解耦但无背压, 上游快于 FFT 会溢出丢样(CIC 抽取后的流恒满足) |
+
+**已验证的事实(dsp 家族 #1~#14,2022.1 实测,三版本回归一致):**
 
 1. **纯截断右移的偏移不可接受**:每级 `>>>` 向下取整,16 级累积成
    sin/cos **±7 LSB** 的输出误差(实测);每级加 round-half-up 后降到
@@ -148,13 +159,25 @@ FPGA Based Computers"。
    * twiddle 用 saturating 码 (2^(WT-1)-1) 表示 1.0, 每级有 ~1/2^WT 的
      幅度亏差(解析 sanity 的容差要按此放宽), 位精确比对由量化模型覆盖。
 
+14. **信道化装配的两个坑 (dsp_chan 实测)**:
+   * **FIFO 字序即频谱方向**:pfir I/Q 配对进 FIFO 时写成 `{Q, I}` 而 fft 的
+     `in_i` 接高半位 → I/Q 交换 → 输入 e^{+j} 变 e^{-j} → 频谱整体镜像
+     (信道 k 的音出现在 bin N−k, 实测 ch5→bin59)。修复后 bin k = 信道 k。
+   * **吞吐失配**:FFT 帧时间(~1281 拍)大于 pfir 帧周期(704 拍)时,
+     信道 FIFO 溢出丢样, fft 永远凑不满一帧(表现为死锁)。上游帧节奏
+     必须按整链瓶颈(FFT)规划;真实施(CIC 抽取后)恒满足。FIFO 解耦的
+     是"脉冲节奏"不是" sustained 吞吐"。
+   * 装配实测:信道中心音增益 1.000(±0.01%), 邻道隔离 −58.8 dB——
+     两级各自的对拍精度在装配后保持(无额外损失)。
+
 
 ## 路线图
 
 频域信道化(PFB 信道化,监测接收机用)推进中:
 `dsp_pfir`(多相滤波级,**完成**)→ `dsp_fft`(迭代式 radix-2,**完成**)
-→ `dsp_chan` 装配(pfir + fft + cordic 幅相,规划;系统级 TB:多音注入
-→ 各信道幅值验证)。
+→ `dsp_chan`(**完成**:IQ 入 → N 复数信道出, 多音系统级实测增益 1.000、
+隔离 −58.8 dB)。可选升级:2× 过采样(信道边缘无缝)、fftshift 重排
+(或由软件按 bin=k 映射)。
 背景:RFSoC 硬 DDC 与 AMD DUC/DDC/DSP IP 覆盖"重滤波 IP 化"路线,
 本库的频域信道化走**全可见 RTL** 路线(跨厂商、可对拍、可嵌入自有测量链),
 参照 litedsp(MIT)/CASPER(SDR 生态)结构。

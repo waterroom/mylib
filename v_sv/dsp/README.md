@@ -22,7 +22,11 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | --- | --- | --- | --- |
 | `dsp_cordic.sv` | `dsp_cordic` | CORDIC 核:旋转(sin/cos)+ 矢量(幅/相)双模式 | v1.0,312 项对拍 |
 | `dsp_cic_decim.sv` | `dsp_cic_decim` | CIC 抽取滤波器(参数化 N/R,DC 增益 1,免乘法) | v1.0,67 项位精确对拍 |
-| `sim/tb_dsp_cordic.sv` `sim/tb_dsp_cic_decim.sv` | — | real-math / longint 位精确对拍自检 | 合计 379 项检查 |
+| `dsp_pfir.sv` | `dsp_pfir` | 多相滤波器组 FIR(PFB 信道化滤波级,时分复用 MAC) | v1.0,901 项位精确对拍 |
+| `dsp_fft.sv` | `dsp_fft` | N 点复 FFT(迭代式 radix-2, in-place BRAM, 定长突发) | v1.0,644 项位精确对拍 |
+| `sim/tb_dsp_*.sv` (4 个) | — | real-math / longint 位精确对拍自检 | 合计 1924 项检查 |
+| `sim/gen_coef_pfir.py` `sim/coef_pfir_64x8.mem` | — | PFB 原型系数生成脚本与系数文件 | |
+| `sim/gen_coef_fft.py` `sim/coef_fft_64_w16.mem` | — | FFT twiddle 生成脚本(含 numpy 交叉验证)与系数文件 | |
 | `sim/run_xsim.sh` | — | 单版本跑自检(纯 RTL,无需 XPM 源;两个 top 依次跑) | |
 | `synth/synth_top.sv` `synth/synth_check.tcl` | — | 综合冒烟(查零警告与资源) | |
 
@@ -49,7 +53,29 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | 资源 | 纯加法/移位,0 DSP48;xczu48dr 合计(含两个 CORDIC)2627 LUT / 2111 FF |
 | 限制 | **抽取比 R 编译期固化,不支持运行时切换**。运行时变 R 的两条可行路径:(a) 多实例(不同 R)+ 输出 mux;(b) ADI 式把各级采样使能外置由系统采样时序生成(library/util_cic 的做法)。**不要用独立模块内部的多级 toggle 门控**——实测各级 tog 与数据脉冲同拍耦合会产生级间锁相死锁(某级使能恒 0,断链),这是把 ADI 结构模块化时最容易踩的坑 |
 
-**已验证的事实(dsp 家族 #1~#7,2022.1 实测,三版本回归一致):**
+### dsp_pfir 速查
+
+| 项 | 说明 |
+| --- | --- |
+| 接口 | `rst`(高有效)+ `in_valid/in_data[B_IN]` → `out_valid/out_data[B_OUT]/out_frame`(帧首标记);每输入 N 样输出一帧 N 个信道值,顺序 p=0..N-1 |
+| 参数 | `N` 信道数(2 的幂 4..1024)/ `K` 每相抽头(2..64)/ `B_IN`/`B_CO` 系数位宽/ `B_OUT`/ `ROUND`/ `COEF_FILE` |
+| 数学 | y_p[m] = Σ_r h[p+rN]·x[mN+p−rN];系数布局 **h[p + r*N]**;DC 增益 1(sum(h)=2^(B_CO-1)) |
+| 输入率 | 每帧 N 样后需 ≥ N·(K+1) 拍计算间隙(时分复用 1 个乘法器;后 CIC 场景恒满足) |
+| 资源 | 1 个乘法器 + 循环缓冲 LUTRAM((K+1)·N 深);xczu48dr 合计(四模块)DSP48=9 / 3204 LUT / 2232 FF |
+
+### dsp_fft 速查
+
+| 项 | 说明 |
+| --- | --- |
+| 接口 | `in_valid/in_ready` 收 N 个复样(每拍 1 个), 蝶形后 unload 阶段 `out_valid/out_frame/out_i/out_q` 每拍 1 个;与 `dsp_pfir` 的帧输出直接串联 |
+| 参数 | `N` 点数(2 的幂 8..1024)/ `B` 输入位宽 / `WT` twiddle 位宽 / `B_OUT`(默认 WI=B+log2(N)+1, 满精度)/ `TW_FILE` |
+| 结构 | 单个 radix-2 蝶形 in-place 操作双口 RAM(库内 `xpm_sdpram`);输入位倒序装载(DIT)、自然序读出;6 拍微序列/蝶形, 单乘法器 |
+| 标度 | 无逐级缩放, 输出 = 复数 FFT 满精度结果(相对 1/N 归一 DFT 放大 N 倍, 监测门限可吸收; 需 1/N 标度在外层右移) |
+| 时序 | 每帧 = N(load) + 6·(N/2)·log2(N)(compute) + N+1(unload);N=64 约 900 拍/帧 |
+| 精度 | 量化模型经 numpy 交叉验证 max_err 0.002 LSB(输入标度);RTL 与模型逐位精确(冲激/直流/单音/随机 5 用例) |
+| 资源 | 四模块合计(xczu48dr, 含 pfir→fft 链路):DSP48=45 / 3478 LUT / 2403 FF |
+
+**已验证的事实(dsp 家族 #1~#13,2022.1 实测,三版本回归一致):**
 
 1. **纯截断右移的偏移不可接受**:每级 `>>>` 向下取整,16 级累积成
    sin/cos **±7 LSB** 的输出误差(实测);每级加 round-half-up 后降到
@@ -84,16 +110,56 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
    前 N−1 个输出样是瞬态(实测 N=3:第 3 个输出起稳态 == 输入);
    TB 参考必须镜像 RTL 的非阻塞语义(阻塞级联会与 RTL 差 N 拍,
    输出窗错位)。
+9. **Verilog signedness 陷阱 (PFB MAC 实测踩中)**:`macen ? coef*data : '0`
+   这种含无类型 `'0` 的三元,整个表达式按**无符号**求值——负数系数被
+   当无符号数(−6 → 65530),乘积错成 2.1e9 (`65530×32767`,实测 acc
+   打印值正是此数)。修法:乘积放在**全 signed 操作数的独立表达式**里
+   (`assign prod = coef_r2 * ram_q;` 再进三元)。凡是 signed 算术进
+   含 `'0` 的表达式,都要过这一关。
+10. **PFB 多相结构的三个关键点 (dsp_pfir 实测)**:
+    * 系数布局 **h[p + r*N]**(p 步进 1、r 步进 N),写成 p*K+r 会得到
+      "支路整体平移 K 倍"的错位 (实测冲激响应错位 +4 支路);
+    * 循环缓冲深度 **(K+1)*N** 多留一帧:计算窗 [w−N·K, w−1] 与写窗
+      [w, w+N) 不相交;深 K*N 在全速输入时覆盖未读最老样;
+    * 每支路末尾插 **1 拍空闲槽做零系数虚拟取指**:保持取指/使能相位
+      连续(末 tap 的 MAC 还要 2 拍才发生),同时把支路边界处的悬空
+      MAC 乘积化为 0;支路和的捕获+清零用 3 级 done 链对齐,单表达式
+      `acc <= (done_p3 ? 0 : acc) + prod` 完成(避免同沿双写)。
 
 参考:ADI hdl `library/common/ad_dds_cordic_pipe.v`(单级旋转结构参照,
 本模块为独立自写实现);Ray Andraka, "A Survey of CORDIC Algorithms for
 FPGA Based Computers"。
+11. **饱和比较的 signedness 复发 (dsp_fft 实测)**:`signed'(1 <<< N) - 1'b1`
+   里混入无符号字面量 `1'b1`, 整个比较被拖成**无符号** -- 负值 (-4) 当无符号
+   大数看恒大于上限, 结果**所有负值被饱和到 +max**(DC 帧的负 q 桶全变
+   4194303)。修法:阈值用 `localparam logic signed` 常量比较。这是事实 #9
+   的同族陷阱第二次现形:凡 signed 比较/算术与无类型字面量混用都要过这一关。
+12. **TB 首样的零延迟竞争 (dsp_fft 实测, 隐蔽度高)**:喂样任务若在进入时
+   `in_ready` 已高, 会在**正沿当拍**驱动 `in_valid/data` -- 与 DUT 的沿采样
+   竞争, 表现为首样写入丢失/整条数据错位(FFT 输出全桶带常数偏置, 且
+   只有非首帧暴露, 因为首帧的"错值"恰好被初值掩盖)。喂样任务入口必须先
+   `@(negedge clk)`, 所有激励变化严格发生在下降沿。
+13. **迭代式 FFT 的四个实现要点 (dsp_fft 实测)**:
+   * in-place DIT:输入按位倒序装载、自然序读出, 无需输出重排;
+   * 数据词布局必须 load 与 compute 完全一致(46 位 = 两个 WI 字段;load
+     直接写 32 位会落在读窗口之外, 实测全桶出垃圾);
+   * unload 填充拍读地址必须为 0(`u` 还残留上帧终值, 否则 bin0 读到
+     mem[63]);输出缓存宽度按 WI 满精度, 逐级误差不累积(无缩放);
+   * twiddle 用 saturating 码 (2^(WT-1)-1) 表示 1.0, 每级有 ~1/2^WT 的
+     幅度亏差(解析 sanity 的容差要按此放宽), 位精确比对由量化模型覆盖。
+
 
 ## 路线图
 
-`nco`(查表 1/4 波压缩)→ `cic_decim`(R/N/M 参数化)→ `ddc_ch`(NCO+CIC
-信道单元)→ `timebase` + `detector` + `pdw_meas`(测量链)。MATLAB 对拍
-harness 在 nco 之前落地。
+频域信道化(PFB 信道化,监测接收机用)推进中:
+`dsp_pfir`(多相滤波级,**完成**)→ `dsp_fft`(迭代式 radix-2,**完成**)
+→ `dsp_chan` 装配(pfir + fft + cordic 幅相,规划;系统级 TB:多音注入
+→ 各信道幅值验证)。
+背景:RFSoC 硬 DDC 与 AMD DUC/DDC/DSP IP 覆盖"重滤波 IP 化"路线,
+本库的频域信道化走**全可见 RTL** 路线(跨厂商、可对拍、可嵌入自有测量链),
+参照 litedsp(MIT)/CASPER(SDR 生态)结构。
+
+测量链(IP 生态不覆盖,差异化正业):`timebase` + `detector` + `pdw_meas`。
 
 ## 验证
 

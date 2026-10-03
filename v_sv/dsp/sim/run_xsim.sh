@@ -7,7 +7,10 @@
 #   bash sim/run_xsim.sh 2018.3          # 指定 Vivado 版本
 #   VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh
 #
-# 说明: dsp 家族是纯 RTL (无 XPM 依赖), 不需要编译 XPM 源码和 glbl。
+# 说明: dsp_cordic/dsp_cic_decim 纯 RTL 零 XPM; dsp_pfir/dsp_fft/dsp_chan
+#       下沉到库内 xpm_sdpram/xpm_sync_fifo, 故需一并编译库内 wrapper、
+#       Vivado 自带 XPM 源码与 glbl (见下方 xvlog 行)。整体随 xpm_wrappers
+#       锚定 Xilinx/Vivado。
 #=============================================================================
 set -e
 

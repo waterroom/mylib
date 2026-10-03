@@ -43,12 +43,10 @@ python std_to_wv.py input.std -o output.wv
 两个脚本的详细说明（STD 头 50 字节布局、实/复信号判据、频偏处理策略、下游
 用法）都写在文件头部 docstring 里；命令行参数用 `-h` 查看。
 
-已回归:Vivado 2018.3 / 2022.1 / 2024.2 三版本 312 项全过;xczu48dr 综合
-零 ERROR / 零 critical warning,DSP48 = 1。
-
 ### `v_sv/dsp/`
 
-**通信 / 雷达接收机定点 DSP 积木**（SystemVerilog，纯 RTL 跨厂商）。与
+**通信 / 雷达接收机定点 DSP 积木**（SystemVerilog；算法本体纯 RTL，存储/流控
+下沉 `xpm_wrappers`，整体随其仅限 Xilinx/Vivado）。与
 `xpm_wrappers` 同一套方法学（头注释契约 + 参数预检 + 自检 + 事实清单），
 但验证轴不同：**TB 内置 real-math 参考模型逐点对拍**（容差按 LSB 计，
 输出 MAX_ERR）。首个模块 `dsp_cordic`：CORDIC 旋转（sin/cos）/ 矢量
@@ -66,6 +64,8 @@ k·f_s/R、免乘法；开发中对拍揪出采样寄存器未条件锁存的真
 `dsp_chan` 实测信道增益 1.000、**邻道隔离 −58.8 dB**(N=64/K=8),
 bin k = 信道 k。开发中对拍先后揪出 signedness 陷阱(含 `'0` 的三元、
 饱和比较)、TB 零延迟竞争、I/Q 字序镜像、吞吐失配等 8 个隐蔽 bug。
+已回归：Vivado 2018.3 / 2022.1 / 2024.2 三版本 1931 项（5 top）全过，
+xczu48dr 五模块全链综合零警告，DSP48 = 99 / 5071 LUT / 2916 FF。
 
 接口、参数、事实清单与路线图(PFB 信道化 / 测量链)见
 [`v_sv/dsp/README.md`](v_sv/dsp/README.md)。

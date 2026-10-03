@@ -1,8 +1,13 @@
 # v_sv/dsp —— 通信 / 雷达接收机定点 DSP 积木
 
-与 `v_sv/xpm_wrappers` 平级的第二个家族:**纯 RTL** 定点 DSP 模块,天然跨厂商,
-不依赖 XPM(需要存储器时下沉到 `xpm_sdpram`);复位/流控等基础设施反向消费
-xpm_wrappers。收"接收机里反复出现、IP 不占优、接口可参数化、可自检"的模块,
+与 `v_sv/xpm_wrappers` 平级的第二个家族:定点 DSP 积木。**算法本体纯 RTL,
+但存储/流控下沉 xpm_wrappers**(`xpm_sdpram`/`xpm_sync_fifo`),随其锚定
+Xilinx/Vivado——**整体不是跨厂商库**:`dsp_cordic`/`dsp_cic_decim` 零 XPM
+依赖,可跨厂商直接复用;`dsp_pfir`/`dsp_fft`/`dsp_chan` 不行。模块自身不
+直接例化 XPM 宏,换平台的移植面收敛在 xpm_wrappers 一层(替换存储/CDC
+原语,dsp 本体不动)。2026-10 决策:评估过把 RAM 核换成自推断写法,CDC/FIFO/
+握手没有推断等价物,单换 RAM 换不来跨厂商,反而多出一套冲突语义无文档保证
+的存储路径,故整库同锚 XPM(冲突语义有文档保证,DRC 与三版本回归现成)。收"接收机里反复出现、IP 不占优、接口可参数化、可自检"的模块,
 不收 FIR/FFT/CORDIC 大核以外的 IP 替代品。
 
 ## 验证方法(与 xpm_wrappers 的本质区别)
@@ -28,7 +33,7 @@ xpm_wrappers 验证的是**协议**,dsp 家族验证的是**数值**:TB 内置 r
 | `sim/tb_dsp_*.sv` (5 个) | — | 位精确对拍 + 系统级多音注入自检 | 合计 1931 项检查 |
 | `sim/gen_coef_pfir.py` `sim/coef_pfir_64x8.mem` | — | PFB 原型系数生成脚本与系数文件 | |
 | `sim/gen_coef_fft.py` `sim/coef_fft_64_w16.mem` | — | FFT twiddle 生成脚本(含 numpy 交叉验证)与系数文件 | |
-| `sim/run_xsim.sh` | — | 单版本跑自检(纯 RTL,无需 XPM 源;两个 top 依次跑) | |
+| `sim/run_xsim.sh` | — | 单版本跑自检(编译库内 wrapper + Vivado XPM 源与 glbl;5 个 top 依次跑) | |
 | `synth/synth_top.sv` `synth/synth_check.tcl` | — | 综合冒烟(查零警告与资源) | |
 
 ## dsp_cordic 速查
@@ -179,7 +184,8 @@ FPGA Based Computers"。
 隔离 −58.8 dB)。可选升级:2× 过采样(信道边缘无缝)、fftshift 重排
 (或由软件按 bin=k 映射)。
 背景:RFSoC 硬 DDC 与 AMD DUC/DDC/DSP IP 覆盖"重滤波 IP 化"路线,
-本库的频域信道化走**全可见 RTL** 路线(跨厂商、可对拍、可嵌入自有测量链),
+本库的频域信道化走**全可见 RTL** 路线(全源码可审、可对拍、可嵌入自有测量链;
+厂商锚定见文件头定位),
 参照 litedsp(MIT)/CASPER(SDR 生态)结构。
 
 测量链(IP 生态不覆盖,差异化正业):`timebase` + `detector` + `pdw_meas`。
@@ -187,7 +193,7 @@ FPGA Based Computers"。
 ## 验证
 
 ```bash
-# 行为自检: 312 项对拍检查
+# 行为自检: 5 个 top 合计 1931 项对拍检查
 bash sim/run_xsim.sh            # 默认 Vivado 2022.1
 VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh   # 换版本
 
@@ -195,5 +201,5 @@ VIVADO_ROOT=/d/Xilinx/Vivado/2024.2 bash sim/run_xsim.sh   # 换版本
 vivado -mode batch -source synth/synth_check.tcl -tclargs xczu48dr-ffvg1517-2-e
 ```
 
-已回归:Vivado 2018.3 / 2022.1 / 2024.2 三版本 312 项全过;xczu48dr 综合
-零 ERROR / 零 critical warning,DSP48 = 1。
+已回归:Vivado 2018.3 / 2022.1 / 2024.2 三版本 1931 项(5 top)全过;xczu48dr
+五模块全链综合零 ERROR / 零 critical warning,DSP48 = 99 / 5071 LUT / 2916 FF。
